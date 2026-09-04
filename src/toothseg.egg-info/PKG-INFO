@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: toothseg
+Version: 0.1.0
+Summary: Minimal tooth detection and segmentation pipeline
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: pillow
+Provides-Extra: train
+Requires-Dist: ultralytics>=8.3.0; extra == "train"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

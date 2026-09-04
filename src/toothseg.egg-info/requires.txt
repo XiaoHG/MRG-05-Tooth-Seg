@@ -1,0 +1,8 @@
+numpy
+pillow
+
+[dev]
+pytest
+
+[train]
+ultralytics>=8.3.0

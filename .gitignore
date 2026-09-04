@@ -1,0 +1,8 @@
+versions/
+references/
+output/
+dataset/
+runs/
+build/
+AGENTS.md
+yolo11n.pt
