@@ -30,6 +30,13 @@ def _list_files_recursive(path: Path, suffixes: Iterable[str]) -> list[Path]:
     return sorted([p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in suffixes])
 
 
+def _active_split_path(root: Path, kind: str) -> Path:
+    split_root = root / kind
+    if (split_root / "train").exists() or (split_root / "val").exists():
+        return split_root
+    return split_root
+
+
 def load_classes(root: Path) -> list[str]:
     classes_path = root / "classes.txt"
     classes = [line.strip() for line in classes_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -43,8 +50,14 @@ def validate_yolo_detection_dataset(root: Path) -> DatasetSummary:
     labels_dir = root / "labels"
     classes = load_classes(root)
 
-    images = _list_files_recursive(images_dir, {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
-    labels = _list_files_recursive(labels_dir, {".txt"})
+    if (images_dir / "train").exists() or (labels_dir / "train").exists():
+        images = _list_files_recursive(images_dir / "train", {".jpg", ".jpeg", ".png", ".bmp", ".webp"}) + _list_files_recursive(
+            images_dir / "val", {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+        )
+        labels = _list_files_recursive(labels_dir / "train", {".txt"}) + _list_files_recursive(labels_dir / "val", {".txt"})
+    else:
+        images = _list_files_recursive(images_dir, {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+        labels = _list_files_recursive(labels_dir, {".txt"})
 
     image_stems = {p.stem for p in images}
     label_stems = {p.stem for p in labels}

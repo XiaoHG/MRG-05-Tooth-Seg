@@ -77,8 +77,10 @@ python cli/main.py predict --weights runs/detect/output/train/tooth-detect/weigh
 
 Outputs:
 
-- `output/predict/*_overlay.png`
-- `output/predict/*_boxes.json`
+- `output/predict/<image-name>/<image-name>_overlay.png`
+- `output/predict/<image-name>/<image-name>_detections.json`
+- `output/predict/<image-name>/<image-name>_1.png`
+- `output/predict/<image-name>/<image-name>_2.png`
 
 ## Test
 
