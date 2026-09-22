@@ -31,13 +31,12 @@ def prepare_dataset(
 
 def export_pseudo_labels(
     predict_root: Path,
-    image_root: Path,
     candidate_root: Path,
     confidence_threshold: float = 0.9,
     teacher_weights: Path | None = None,
 ) -> Path:
     return export_pseudo_label_candidates(
-        predict_root, image_root, candidate_root, confidence_threshold, teacher_weights
+        predict_root, candidate_root, confidence_threshold, teacher_weights
     )
 
 
@@ -54,9 +53,11 @@ def train(
     device: str | None = None,
     project: str = "output/train",
     name: str = "tooth-detect-v5",
+    weights: Path | None = None,
 ) -> Path:
     return train_yolo_detection(
         data_yaml,
+        weights=weights,
         epochs=epochs,
         imgsz=imgsz,
         batch=batch,

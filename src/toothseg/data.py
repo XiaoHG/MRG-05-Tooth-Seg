@@ -286,7 +286,6 @@ def _sha256(path: Path) -> str:
 
 def export_pseudo_label_candidates(
     predict_root: Path,
-    image_root: Path,
     candidate_root: Path,
     confidence_threshold: float = 0.9,
     teacher_weights: Path | None = None,
@@ -298,7 +297,6 @@ def export_pseudo_label_candidates(
     if not json_files:
         raise ValueError(f"No detection JSON files found in: {predict_root}")
 
-    image_by_stem = {path.stem: path for path in image_root.rglob("*") if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES}
     images_dir = candidate_root / "images"
     labels_dir = candidate_root / "labels"
     if candidate_root.exists():
@@ -310,9 +308,9 @@ def export_pseudo_label_candidates(
     for json_path in json_files:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
         stem = str(payload.get("image", json_path.name.removesuffix("_detections.json")))
-        source_image = image_by_stem.get(stem)
-        if source_image is None:
-            raise FileNotFoundError(f"Cannot find source image for {json_path}: {stem}")
+        source_image = json_path.parent / f"{stem}_original.png"
+        if not source_image.is_file():
+            raise FileNotFoundError(f"Original prediction image not found: {source_image}")
         with Image.open(source_image) as image:
             width, height = image.size
         selected = []
@@ -333,7 +331,8 @@ def export_pseudo_label_candidates(
             selected.append({"confidence": confidence, "box_xyxy": [x1, y1, x2, y2]})
         if not selected:
             continue
-        shutil.copy2(source_image, images_dir / source_image.name)
+        candidate_image = images_dir / f"{stem}{source_image.suffix.lower()}"
+        shutil.copy2(source_image, candidate_image)
         label_lines = []
         for detection in selected:
             x1, y1, x2, y2 = detection["box_xyxy"]
@@ -341,9 +340,9 @@ def export_pseudo_label_candidates(
                 ((x1 + x2) / 2) / width, ((y1 + y2) / 2) / height,
                 (x2 - x1) / width, (y2 - y1) / height,
             ))
-        (labels_dir / f"{source_image.stem}.txt").write_text("\n".join(label_lines) + "\n", encoding="utf-8")
+        (labels_dir / f"{candidate_image.stem}.txt").write_text("\n".join(label_lines) + "\n", encoding="utf-8")
         records.append({
-            "image": source_image.name,
+            "image": candidate_image.name,
             "source_image": str(source_image),
             "source_image_sha256": _sha256(source_image),
             "source_detection_json": str(json_path),
@@ -358,7 +357,6 @@ def export_pseudo_label_candidates(
         "task": "single-class tooth detection pseudo-label candidates",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "predict_root": str(predict_root),
-        "image_root": str(image_root),
         "teacher_weights": str(teacher_weights) if teacher_weights else None,
         "confidence_threshold": confidence_threshold,
         "review_required": True,

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
+
+# Conda's MKL runtime and PyTorch can load separate Intel OpenMP DLLs on Windows.
+if os.name == "nt":
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -16,10 +21,32 @@ def _require_ultralytics() -> Any:
     return YOLO
 
 
-def train_yolo_detection(data_yaml: Path, epochs: int = 50, imgsz: int = 1024, project: str = "output/train") -> Path:
+def train_yolo_detection(
+    data_yaml: Path,
+    epochs: int = 50,
+    imgsz: int = 1024,
+    batch: int = -1,
+    amp: bool = True,
+    device: str | None = None,
+    project: str = "output/train",
+    name: str = "tooth-detect-v5",
+    weights: Path | None = None,
+) -> Path:
     YOLO = _require_ultralytics()
-    model = YOLO("yolo11n.pt")
-    result = model.train(data=str(data_yaml), epochs=epochs, imgsz=imgsz, project=project, name="tooth-detect")
+    model = YOLO(str(weights) if weights is not None else "yolo11n.pt")
+    project_path = Path(project).resolve()
+    kwargs: dict[str, Any] = {
+        "data": str(data_yaml),
+        "epochs": epochs,
+        "imgsz": imgsz,
+        "batch": batch,
+        "amp": amp,
+        "project": str(project_path),
+        "name": name,
+    }
+    if device:
+        kwargs["device"] = device
+    result = model.train(**kwargs)
     return Path(result.save_dir) / "weights" / "best.pt"
 
 
@@ -50,14 +77,21 @@ def predict_image(weights: Path, image_path: Path, conf: float = 0.25) -> dict[s
     return {"image": image, "source": source, "boxes": boxes, "confs": confs, "raw": result}
 
 
-def save_prediction(result: dict[str, Any], output_dir: Path, stem: str) -> dict[str, Path]:
+def save_prediction(
+    result: dict[str, Any],
+    output_dir: Path,
+    stem: str,
+    source_path: Path | None = None,
+) -> dict[str, Path]:
     sample_dir = output_dir / stem
     sample_dir.mkdir(parents=True, exist_ok=True)
 
     overlay_path = sample_dir / f"{stem}_overlay.png"
+    original_path = sample_dir / f"{stem}_original.png"
     json_path = sample_dir / f"{stem}_detections.json"
     image = result["image"]
     source = result["source"]
+    source.save(original_path)
     image.save(overlay_path)
 
     payload_boxes = []
@@ -67,6 +101,8 @@ def save_prediction(result: dict[str, Any], output_dir: Path, stem: str) -> dict
         top = max(0, int(np.floor(y1)))
         right = min(source.width, int(np.ceil(x2)))
         bottom = min(source.height, int(np.ceil(y2)))
+        if right <= left or bottom <= top:
+            continue
         crop = source.crop((left, top, right, bottom))
         crop_path = sample_dir / f"{stem}_{idx}.png"
         crop.save(crop_path)
@@ -80,5 +116,35 @@ def save_prediction(result: dict[str, Any], output_dir: Path, stem: str) -> dict
         )
 
     payload = {"image": stem, "detections": payload_boxes}
+    if source_path is not None:
+        payload["source_image"] = source_path.as_posix()
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"overlay": overlay_path, "json": json_path, "dir": sample_dir}
+    return {"original": original_path, "overlay": overlay_path, "json": json_path, "dir": sample_dir}
+
+
+def predict_directory(weights: Path, image_dir: Path, output_dir: Path, conf: float = 0.25) -> list[dict[str, Path]]:
+    image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    if not image_dir.exists():
+        raise FileNotFoundError(f"Image directory not found: {image_dir}")
+
+    image_paths = sorted(
+        path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in image_suffixes
+    )
+    if not image_paths:
+        raise ValueError(f"No supported images found in: {image_dir}")
+
+    outputs: list[dict[str, Path]] = []
+    total = len(image_paths)
+    for index, image_path in enumerate(image_paths, start=1):
+        relative_path = image_path.relative_to(image_dir)
+        print(f"[{index}/{total}] {relative_path.as_posix()}")
+        result = predict_image(weights, image_path, conf=conf)
+        outputs.append(
+            save_prediction(
+                result,
+                output_dir,
+                image_path.stem,
+                source_path=relative_path,
+            )
+        )
+    return outputs

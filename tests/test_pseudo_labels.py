@@ -7,13 +7,10 @@ from toothseg.data import export_pseudo_label_candidates, prepare_raw_yolo_datas
 
 
 def test_export_pseudo_labels_clips_boxes_and_writes_review_manifest(tmp_path):
-    images = tmp_path / "test-images"
     predictions = tmp_path / "predict"
-    images.mkdir()
-    sample = images / "mouth.jpg"
-    Image.new("RGB", (100, 80), "white").save(sample)
     prediction_dir = predictions / "mouth"
     prediction_dir.mkdir(parents=True)
+    Image.new("RGB", (100, 80), "white").save(prediction_dir / "mouth_original.png")
     (prediction_dir / "mouth_detections.json").write_text(
         json.dumps({
             "image": "mouth",
@@ -26,9 +23,9 @@ def test_export_pseudo_labels_clips_boxes_and_writes_review_manifest(tmp_path):
     )
 
     candidate_root = tmp_path / "candidates"
-    manifest_path = export_pseudo_label_candidates(predictions, images, candidate_root)
+    manifest_path = export_pseudo_label_candidates(predictions, candidate_root)
 
-    assert (candidate_root / "images" / "mouth.jpg").exists()
+    assert (candidate_root / "images" / "mouth.png").exists()
     assert (candidate_root / "labels" / "mouth.txt").read_text(encoding="utf-8").strip() == "0 0.25000000 0.56250000 0.50000000 0.87500000"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["records"][0]["review_status"] == "pending"

@@ -37,7 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("pseudo-label-export")
     p.add_argument("--predict", type=Path, default=Path("output/predict"))
-    p.add_argument("--images", type=Path, default=Path("dataset/images/test"))
     p.add_argument("--output", type=Path, default=Path("output/pseudo-label-v6-candidates"))
     p.add_argument("--confidence", type=float, default=0.9)
     p.add_argument("--teacher-weights", type=Path, default=None)
@@ -48,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("train")
     p.add_argument("--data-yaml", type=Path, default=Path("dataset/data.yaml"))
+    p.add_argument("--weights", type=Path, default=None)
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--imgsz", type=int, default=1024)
     p.add_argument("--batch", type=int, default=-1)
@@ -89,13 +89,14 @@ def main() -> None:
         )
         print(path)
     elif args.cmd == "pseudo-label-export":
-        print(export_pseudo_labels(args.predict, args.images, args.output, args.confidence, args.teacher_weights))
+        print(export_pseudo_labels(args.predict, args.output, args.confidence, args.teacher_weights))
     elif args.cmd == "pseudo-label-publish":
         print(publish_pseudo_labels(args.candidates, args.raw))
     elif args.cmd == "train":
         print(
             train(
                 args.data_yaml,
+                weights=args.weights,
                 epochs=args.epochs,
                 imgsz=args.imgsz,
                 batch=args.batch,
