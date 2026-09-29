@@ -35,6 +35,13 @@ def _list_files_recursive(path: Path, suffixes: Iterable[str]) -> list[Path]:
     return sorted([p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in suffixes])
 
 
+def _find_duplicate_stems(paths: Iterable[Path]) -> dict[str, list[Path]]:
+    by_stem: dict[str, list[Path]] = {}
+    for path in paths:
+        by_stem.setdefault(path.stem, []).append(path)
+    return {stem: sorted(items) for stem, items in by_stem.items() if len(items) > 1}
+
+
 def _active_split_path(root: Path, kind: str) -> Path:
     split_root = root / kind
     if (split_root / "train").exists() or (split_root / "val").exists():
@@ -98,6 +105,16 @@ def validate_yolo_detection_dataset(root: Path) -> DatasetSummary:
     else:
         images = _list_files_recursive(images_dir, {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
         labels = _list_files_recursive(labels_dir, {".txt"})
+
+    duplicate_images = _find_duplicate_stems(images)
+    if duplicate_images:
+        details = "; ".join(
+            f"{stem}: {[path.name for path in paths]}" for stem, paths in sorted(duplicate_images.items())
+        )
+        raise ValueError(
+            "Multiple image files share a YOLO label stem; move or rename the duplicates before training: "
+            + details
+        )
 
     image_stems = {p.stem for p in images}
     label_stems = {p.stem for p in labels}
@@ -170,6 +187,16 @@ def prepare_raw_yolo_dataset(
     names = [image.name for _, image, _ in records]
     if len(names) != len(set(names)):
         raise ValueError("Duplicate image names exist across raw sources")
+    duplicate_source_stems = _find_duplicate_stems(image for _, image, _ in records)
+    if duplicate_source_stems:
+        details = "; ".join(
+            f"{stem}: {[f'{path.parent.parent.name}/{path.name}' for path in paths]}"
+            for stem, paths in sorted(duplicate_source_stems.items())
+        )
+        raise ValueError(
+            "Duplicate image stems exist across raw sources; resolve them before preparing the dataset: "
+            + details
+        )
 
     output_root.mkdir(parents=True, exist_ok=True)
     for split in ("train", "val"):
