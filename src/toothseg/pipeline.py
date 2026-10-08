@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .data import (
+    export_yolo_detection_to_label_studio,
     export_pseudo_label_candidates,
     prepare_raw_yolo_dataset,
     publish_approved_pseudo_labels,
@@ -10,6 +11,7 @@ from .data import (
 )
 from .model import (
     predict_directory,
+    predict_directory_visualizations,
     predict_image,
     save_prediction,
     train_yolo_detection,
@@ -44,6 +46,15 @@ def publish_pseudo_labels(candidate_root: Path, raw_root: Path) -> Path:
     return publish_approved_pseudo_labels(candidate_root, raw_root)
 
 
+def export_to_label_studio(
+    raw_root: Path,
+    output_root: Path,
+    image_url_prefix: str = "/data/local-files/?d=images",
+    overwrite: bool = False,
+) -> Path:
+    return export_yolo_detection_to_label_studio(raw_root, output_root, image_url_prefix, overwrite)
+
+
 def train(
     data_yaml: Path,
     epochs: int = 50,
@@ -72,10 +83,20 @@ def validate(weights: Path, data_yaml: Path) -> Path:
     return validate_yolo_detection(weights, data_yaml)
 
 
-def predict(weights: Path, image_path: Path, output_dir: Path, conf: float = 0.25) -> dict[str, Path]:
-    result = predict_image(weights, image_path, conf=conf)
+def predict(
+    weights: Path, image_path: Path, output_dir: Path, conf: float = 0.25, device: str | None = None
+) -> dict[str, Path]:
+    result = predict_image(weights, image_path, conf=conf, device=device)
     return save_prediction(result, output_dir, image_path.stem)
 
 
-def predict_dir(weights: Path, image_dir: Path, output_dir: Path, conf: float = 0.25) -> list[dict[str, Path]]:
-    return predict_directory(weights, image_dir, output_dir, conf=conf)
+def predict_dir(
+    weights: Path, image_dir: Path, output_dir: Path, conf: float = 0.25, device: str | None = None
+) -> list[dict[str, Path]]:
+    return predict_directory(weights, image_dir, output_dir, conf=conf, device=device)
+
+
+def predict_visualize(
+    weights: Path, image_dir: Path, output_dir: Path, conf: float = 0.25, device: str | None = None
+) -> Path:
+    return predict_directory_visualizations(weights, image_dir, output_dir, conf=conf, device=device)

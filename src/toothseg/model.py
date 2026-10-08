@@ -58,10 +58,13 @@ def validate_yolo_detection(weights: Path, data_yaml: Path, project: str = "outp
     return Path(save_dir) if save_dir is not None else Path(project) / "tooth-detect"
 
 
-def predict_image(weights: Path, image_path: Path, conf: float = 0.25) -> dict[str, Any]:
-    YOLO = _require_ultralytics()
-    model = YOLO(str(weights))
-    result = model.predict(source=str(image_path), conf=conf, verbose=False)[0]
+def _predict_image_with_model(
+    model: Any, image_path: Path, conf: float = 0.25, device: str | None = None
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"source": str(image_path), "conf": conf, "verbose": False}
+    if device:
+        kwargs["device"] = device
+    result = model.predict(**kwargs)[0]
 
     source = Image.open(image_path).convert("RGB")
     image = source.copy()
@@ -75,6 +78,13 @@ def predict_image(weights: Path, image_path: Path, conf: float = 0.25) -> dict[s
             confs.append(float(score))
             draw.rectangle((x1, y1, x2, y2), outline="red", width=3)
     return {"image": image, "source": source, "boxes": boxes, "confs": confs, "raw": result}
+
+
+def predict_image(
+    weights: Path, image_path: Path, conf: float = 0.25, device: str | None = None
+) -> dict[str, Any]:
+    YOLO = _require_ultralytics()
+    return _predict_image_with_model(YOLO(str(weights)), image_path, conf=conf, device=device)
 
 
 def save_prediction(
@@ -122,7 +132,13 @@ def save_prediction(
     return {"original": original_path, "overlay": overlay_path, "json": json_path, "dir": sample_dir}
 
 
-def predict_directory(weights: Path, image_dir: Path, output_dir: Path, conf: float = 0.25) -> list[dict[str, Path]]:
+def predict_directory(
+    weights: Path,
+    image_dir: Path,
+    output_dir: Path,
+    conf: float = 0.25,
+    device: str | None = None,
+) -> list[dict[str, Path]]:
     image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
     if not image_dir.exists():
         raise FileNotFoundError(f"Image directory not found: {image_dir}")
@@ -138,7 +154,10 @@ def predict_directory(weights: Path, image_dir: Path, output_dir: Path, conf: fl
     for index, image_path in enumerate(image_paths, start=1):
         relative_path = image_path.relative_to(image_dir)
         print(f"[{index}/{total}] {relative_path.as_posix()}")
-        result = predict_image(weights, image_path, conf=conf)
+        if device:
+            result = predict_image(weights, image_path, conf=conf, device=device)
+        else:
+            result = predict_image(weights, image_path, conf=conf)
         outputs.append(
             save_prediction(
                 result,
@@ -148,3 +167,60 @@ def predict_directory(weights: Path, image_dir: Path, output_dir: Path, conf: fl
             )
         )
     return outputs
+
+
+def predict_directory_visualizations(
+    weights: Path,
+    image_dir: Path,
+    output_dir: Path,
+    conf: float = 0.25,
+    device: str | None = None,
+) -> Path:
+    """Write one annotated image per input plus a single aggregate JSON result."""
+    image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    if not image_dir.exists():
+        raise FileNotFoundError(f"Image directory not found: {image_dir}")
+
+    image_paths = sorted(
+        path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in image_suffixes
+    )
+    if not image_paths:
+        raise ValueError(f"No supported images found in: {image_dir}")
+    names = [path.name for path in image_paths]
+    duplicate_names = sorted({name for name in names if names.count(name) > 1})
+    if duplicate_names:
+        raise ValueError(
+            "Duplicate image names are not supported for aggregate predictions: "
+            + ", ".join(duplicate_names)
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    YOLO = _require_ultralytics()
+    model = YOLO(str(weights))
+    predictions: dict[str, dict[str, Any]] = {}
+    total = len(image_paths)
+    for index, image_path in enumerate(image_paths, start=1):
+        relative_path = image_path.relative_to(image_dir)
+        print(f"[{index}/{total}] {relative_path.as_posix()}")
+        if device:
+            result = _predict_image_with_model(model, image_path, conf=conf, device=device)
+        else:
+            result = _predict_image_with_model(model, image_path, conf=conf)
+        overlay_path = output_dir / f"{image_path.stem}_overlay.png"
+        result["image"].save(overlay_path)
+        predictions[image_path.name] = {
+            "source_image": relative_path.as_posix(),
+            "visualization": overlay_path.name,
+            "detections": [
+                {
+                    "index": detection_index,
+                    "confidence": score,
+                    "box_xyxy": box,
+                }
+                for detection_index, (box, score) in enumerate(zip(result["boxes"], result["confs"]), start=1)
+            ],
+        }
+
+    predictions_path = output_dir / "predictions.json"
+    predictions_path.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
+    return predictions_path

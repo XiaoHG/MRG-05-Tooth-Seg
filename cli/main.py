@@ -11,10 +11,12 @@ if str(SRC) not in sys.path:
 
 from toothseg.data import validate_yolo_detection_dataset
 from toothseg.pipeline import (
+    export_to_label_studio,
     export_pseudo_labels,
     prepare_dataset,
     predict,
     predict_dir,
+    predict_visualize,
     publish_pseudo_labels,
     train,
     validate,
@@ -45,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--candidates", type=Path, default=Path("output/pseudo-label-v6-candidates"))
     p.add_argument("--raw", type=Path, default=Path("dataset/raw"))
 
+    p = sub.add_parser("to-labelstudio")
+    p.add_argument("--data", type=Path, default=Path("dataset/raw"))
+    p.add_argument("--output", type=Path, default=Path("output/to_labelstudio"))
+    p.add_argument("--image-url-prefix", default="/data/local-files/?d=images")
+    p.add_argument("--overwrite", action="store_true")
+
     p = sub.add_parser("train")
     p.add_argument("--data-yaml", type=Path, default=Path("dataset/data.yaml"))
     p.add_argument("--weights", type=Path, default=None)
@@ -65,12 +73,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--image", type=Path, required=True)
     p.add_argument("--output", type=Path, default=Path("output/predict"))
     p.add_argument("--conf", type=float, default=0.25)
+    p.add_argument("--device", default=None)
 
     p = sub.add_parser("predict-dir")
     p.add_argument("--weights", type=Path, required=True)
     p.add_argument("--image-dir", type=Path, required=True)
     p.add_argument("--output", type=Path, default=Path("output/predict"))
     p.add_argument("--conf", type=float, default=0.25)
+    p.add_argument("--device", default=None)
+
+    p = sub.add_parser("predict-visualize")
+    p.add_argument("--weights", type=Path, required=True)
+    p.add_argument("--image-dir", type=Path, required=True)
+    p.add_argument("--output", type=Path, default=Path("output/predict"))
+    p.add_argument("--conf", type=float, default=0.25)
+    p.add_argument("--device", default=None)
 
     return parser
 
@@ -92,6 +109,8 @@ def main() -> None:
         print(export_pseudo_labels(args.predict, args.output, args.confidence, args.teacher_weights))
     elif args.cmd == "pseudo-label-publish":
         print(publish_pseudo_labels(args.candidates, args.raw))
+    elif args.cmd == "to-labelstudio":
+        print(export_to_label_studio(args.data, args.output, args.image_url_prefix, args.overwrite))
     elif args.cmd == "train":
         print(
             train(
@@ -109,10 +128,13 @@ def main() -> None:
     elif args.cmd == "val":
         print(validate(args.weights, args.data_yaml))
     elif args.cmd == "predict":
-        print(predict(args.weights, args.image, args.output, conf=args.conf))
+        print(predict(args.weights, args.image, args.output, conf=args.conf, device=args.device))
     elif args.cmd == "predict-dir":
         print(f"Predicting images in: {args.image_dir}")
-        print(predict_dir(args.weights, args.image_dir, args.output, conf=args.conf))
+        print(predict_dir(args.weights, args.image_dir, args.output, conf=args.conf, device=args.device))
+    elif args.cmd == "predict-visualize":
+        print(f"Predicting images in: {args.image_dir}")
+        print(predict_visualize(args.weights, args.image_dir, args.output, conf=args.conf, device=args.device))
 
 
 if __name__ == "__main__":
