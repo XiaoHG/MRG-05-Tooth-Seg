@@ -114,11 +114,12 @@ def materialize_prepared_data_yaml(dataset_dir: Path, output_dir: Path, layout: 
                 if relative.startswith("images/")
                 else relative.replace("labels/", "annotations/", 1)
             )
-            if not link.exists():
-                try:
-                    link.symlink_to(source, target_is_directory=True)
-                except OSError:
-                    shutil.copytree(source, link)
+            # Ultralytics resolves image symlinks before deriving the label
+            # path, which loses the images/labels directory convention.
+            # Copy the files into a standard YOLO view instead.
+            if link.exists() or link.is_symlink():
+                shutil.rmtree(link)
+            shutil.copytree(source, link)
     source = dataset_dir / "data.yaml"
     if not source.is_file():
         source = view_root / "data.yaml"
