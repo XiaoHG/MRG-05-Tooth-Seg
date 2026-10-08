@@ -40,16 +40,43 @@ def install_repository(repo_dir: Path) -> None:
 
 
 def is_prepared_dataset(dataset_dir: Path) -> bool:
-    return all(
+    return _prepared_layout(dataset_dir) is not None
+
+
+def _prepared_layout(dataset_dir: Path) -> str | None:
+    """Return the prepared layout detected at the supplied dataset path."""
+    if all(
         (dataset_dir / relative).exists()
         for relative in (
             "images/train",
             "images/val",
             "labels/train",
             "labels/val",
-            "data.yaml",
         )
-    )
+    ):
+        return "images"
+    if all(
+        (dataset_dir / relative).exists()
+        for relative in (
+            "train",
+            "val",
+            "annotations/train",
+            "annotations/val",
+        )
+    ):
+        return "split"
+    return None
+
+
+def locate_prepared_dataset(dataset_dir: Path) -> tuple[Path, str] | None:
+    """Find a prepared dataset at the supplied path or one nested below it."""
+    candidates = [dataset_dir]
+    candidates.extend(path for path in dataset_dir.iterdir() if path.is_dir())
+    for candidate in candidates:
+        layout = _prepared_layout(candidate)
+        if layout:
+            return candidate, layout
+    return None
 
 
 def prepare_dataset(dataset_dir: Path, repo_dir: Path, output_dir: Path, val_ratio: float, seed: int) -> Path:
@@ -74,20 +101,41 @@ def prepare_dataset(dataset_dir: Path, repo_dir: Path, output_dir: Path, val_rat
     return prepared_dir
 
 
-def materialize_prepared_data_yaml(dataset_dir: Path, output_dir: Path) -> Path:
+def materialize_prepared_data_yaml(dataset_dir: Path, output_dir: Path, layout: str) -> Path:
     """Make a Kaggle-local YAML whose path points at the mounted dataset."""
+    view_root = dataset_dir
+    if layout == "split":
+        view_root = output_dir / "dataset-view"
+        for relative in ("images/train", "images/val", "labels/train", "labels/val"):
+            link = view_root / relative
+            link.parent.mkdir(parents=True, exist_ok=True)
+            source = dataset_dir / (
+                relative.replace("images/", "", 1)
+                if relative.startswith("images/")
+                else relative.replace("labels/", "annotations/", 1)
+            )
+            if not link.exists():
+                try:
+                    link.symlink_to(source, target_is_directory=True)
+                except OSError:
+                    shutil.copytree(source, link)
     source = dataset_dir / "data.yaml"
     if not source.is_file():
-        raise SystemExit(f"Prepared dataset is missing data.yaml: {source}")
-    lines = source.read_text(encoding="utf-8").splitlines()
+        source = view_root / "data.yaml"
+    lines = source.read_text(encoding="utf-8").splitlines() if source.is_file() else [
+        "train: images/train",
+        "val: images/val",
+        "names:",
+        "  0: tooth",
+    ]
     replaced = False
     for index, line in enumerate(lines):
         if line.lstrip().startswith("path:"):
-            lines[index] = f"path: {dataset_dir.resolve().as_posix()}"
+            lines[index] = f"path: {view_root.resolve().as_posix()}"
             replaced = True
             break
     if not replaced:
-        lines.insert(0, f"path: {dataset_dir.resolve().as_posix()}")
+        lines.insert(0, f"path: {view_root.resolve().as_posix()}")
     runtime_yaml = output_dir / "dataset.yaml"
     runtime_yaml.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return runtime_yaml
@@ -124,15 +172,19 @@ def main() -> None:
     clone_repository(args.repo_url, args.repo_ref, args.repo_dir)
     install_repository(args.repo_dir)
 
-    prepared = is_prepared_dataset(args.dataset)
+    located = locate_prepared_dataset(args.dataset)
+    prepared = located is not None
     if args.dataset_mode == "prepared" and not prepared:
-        raise SystemExit("--dataset-mode prepared requires images/train, images/val, labels/train, labels/val and data.yaml.")
+        raise SystemExit(
+            "--dataset-mode prepared could not find a prepared dataset below "
+            f"{args.dataset}. Expected images/train + labels/train, or train + annotations/train."
+        )
     if args.dataset_mode == "raw" or (args.dataset_mode == "auto" and not prepared):
         data_root = prepare_dataset(args.dataset, args.repo_dir, args.output_dir, args.val_ratio, args.seed)
         data_yaml = data_root / "data.yaml"
     else:
-        data_root = args.dataset
-        data_yaml = materialize_prepared_data_yaml(data_root, args.output_dir)
+        data_root, layout = located
+        data_yaml = materialize_prepared_data_yaml(data_root, args.output_dir, layout)
 
     command = [
         sys.executable,
