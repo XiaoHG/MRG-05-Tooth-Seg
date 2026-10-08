@@ -117,7 +117,9 @@ def materialize_prepared_data_yaml(dataset_dir: Path, output_dir: Path, layout: 
             # Ultralytics resolves image symlinks before deriving the label
             # path, which loses the images/labels directory convention.
             # Copy the files into a standard YOLO view instead.
-            if link.exists() or link.is_symlink():
+            if link.is_symlink():
+                link.unlink()
+            elif link.exists():
                 shutil.rmtree(link)
             shutil.copytree(source, link)
     source = dataset_dir / "data.yaml"
