@@ -23,6 +23,49 @@ class DatasetSummary:
     max_boxes_per_image: int
 
 
+def materialize_yolo_data_yaml(dataset_root: Path, runtime_dir: Path) -> Path:
+    """Create a runtime YOLO view/config from a dataset directory."""
+    dataset_root = dataset_root.resolve()
+    runtime_dir = runtime_dir.resolve()
+    image_train = dataset_root / "images" / "train"
+    split = (dataset_root / "train").is_dir() and (dataset_root / "labels" / "train").is_dir()
+    standard = not split and image_train.is_dir() and (dataset_root / "labels" / "train").is_dir()
+    if not standard and not split:
+        raise ValueError(
+            f"Unsupported dataset layout: {dataset_root}. Expected images/train + labels/train "
+            "or train + labels/train."
+        )
+
+    view_root = dataset_root
+    if split:
+        view_root = runtime_dir / "dataset-view"
+        for split_name in ("train", "val", "test"):
+            image_source = dataset_root / split_name
+            label_source = dataset_root / "labels" / split_name
+            if image_source.is_dir() and label_source.is_dir():
+                shutil.copytree(image_source, view_root / "images" / split_name, dirs_exist_ok=True)
+                shutil.copytree(label_source, view_root / "labels" / split_name, dirs_exist_ok=True)
+
+    classes_path = dataset_root / "classes.txt"
+    classes = ["tooth"]
+    if classes_path.is_file():
+        values = [line.strip() for line in classes_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if values:
+            classes = values
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = runtime_dir / "dataset.yaml"
+    lines = [
+        f"path: {view_root.as_posix()}",
+        "train: images/train",
+        "val: images/val",
+    ]
+    if (view_root / "images" / "test").is_dir():
+        lines.append("test: images/test")
+    lines.extend(["names:", *[f"  {index}: {name}" for index, name in enumerate(classes)], ""])
+    yaml_path.write_text("\n".join(lines), encoding="utf-8")
+    return yaml_path
+
+
 def _list_files(path: Path, suffixes: Iterable[str]) -> list[Path]:
     if not path.exists():
         return []
@@ -309,6 +352,261 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _label_studio_task_id(source_name: str, image_path: Path) -> str:
+    return f"{source_name}--{image_path.stem}"
+
+
+def _label_studio_rectangle_result(
+    task_id: str,
+    index: int,
+    label_path: Path,
+    image_width: int,
+    image_height: int,
+) -> tuple[dict[str, object], int]:
+    results = []
+    clipped_box_count = 0
+    for line_number, line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 5:
+            raise ValueError(f"Invalid YOLO label line in {label_path}: {line}")
+        cls, x_center, y_center, width, height = parts
+        if cls != "0":
+            raise ValueError(f"Unexpected class id in {label_path}: {cls}")
+        x_center, y_center, width, height = (float(value) for value in (x_center, y_center, width, height))
+        if not all(math.isfinite(value) for value in (x_center, y_center, width, height)):
+            raise ValueError(f"Non-finite YOLO coordinates in {label_path}: {line}")
+        if not (0 <= x_center <= 1 and 0 <= y_center <= 1 and 0 < width <= 1 and 0 < height <= 1):
+            raise ValueError(f"Invalid YOLO coordinates in {label_path}: {line}")
+        left = x_center - width / 2
+        top = y_center - height / 2
+        right = left + width
+        bottom = top + height
+        clipped_left = max(0.0, left)
+        clipped_top = max(0.0, top)
+        clipped_right = min(1.0, right)
+        clipped_bottom = min(1.0, bottom)
+        if clipped_right <= clipped_left or clipped_bottom <= clipped_top:
+            raise ValueError(f"YOLO box has no visible area in {label_path}: {line}")
+        if (clipped_left, clipped_top, clipped_right, clipped_bottom) != (left, top, right, bottom):
+            clipped_box_count += 1
+        results.append(
+            {
+                "id": f"{task_id}-{index}-{line_number}",
+                "from_name": "tooth",
+                "to_name": "image",
+                "type": "rectanglelabels",
+                "original_width": image_width,
+                "original_height": image_height,
+                "image_rotation": 0,
+                "value": {
+                    "x": round(clipped_left * 100, 6),
+                    "y": round(clipped_top * 100, 6),
+                    "width": round((clipped_right - clipped_left) * 100, 6),
+                    "height": round((clipped_bottom - clipped_top) * 100, 6),
+                    "rotation": 0,
+                    "rectanglelabels": ["tooth"],
+                },
+            }
+        )
+    return {"model_version": "yolo-detection-import", "result": results}, clipped_box_count
+
+
+def export_yolo_detection_to_label_studio(
+    raw_root: Path,
+    output_root: Path,
+    image_url_prefix: str = "/data/local-files/?d=images",
+    overwrite: bool = False,
+) -> Path:
+    """Export raw YOLO detection boxes as editable Label Studio predictions."""
+    source_roots = sorted(
+        path for path in raw_root.iterdir() if path.is_dir() and (path / "images").is_dir() and (path / "labels").is_dir()
+    ) if raw_root.exists() else []
+    if not source_roots:
+        raise ValueError(f"No raw dataset sources found in: {raw_root}")
+    records: list[tuple[str, Path, Path]] = []
+    expected_classes: list[str] | None = None
+    for source_root in source_roots:
+        images, labels, classes, _ = _validate_source_dataset(source_root)
+        duplicate_stems = _find_duplicate_stems(images)
+        if duplicate_stems:
+            raise ValueError(f"Duplicate image stems in raw source {source_root}: {sorted(duplicate_stems)}")
+        if expected_classes is None:
+            expected_classes = classes
+        elif classes != expected_classes:
+            raise ValueError(f"Class definitions differ in {source_root}: {classes} != {expected_classes}")
+        label_by_stem = {path.stem: path for path in labels}
+        records.extend((source_root.name, image_path, label_by_stem[image_path.stem]) for image_path in images)
+
+    image_names = [image_path.name for _, image_path, _ in records]
+    if len(image_names) != len(set(image_names)):
+        raise ValueError("Duplicate image names exist across raw sources")
+    duplicate_stems = _find_duplicate_stems(image_path for _, image_path, _ in records)
+    if duplicate_stems:
+        raise ValueError(f"Duplicate image stems exist across raw sources: {sorted(duplicate_stems)}")
+
+    prepared_records = []
+    for index, (source_name, image_path, label_path) in enumerate(records, start=1):
+        task_id = _label_studio_task_id(source_name, image_path)
+        with Image.open(image_path) as image:
+            image_width, image_height = image.size
+        if image_width <= 0 or image_height <= 0:
+            raise ValueError(f"Invalid image size: {image_path}")
+        prediction, clipped_box_count = _label_studio_rectangle_result(
+            task_id, index, label_path, image_width, image_height
+        )
+        prepared_records.append(
+            (source_name, image_path, label_path, task_id, image_width, image_height, prediction, clipped_box_count)
+        )
+
+    if output_root.exists():
+        if not overwrite:
+            raise FileExistsError(f"Label Studio output already exists: {output_root}. Use overwrite=True to replace it.")
+        shutil.rmtree(output_root)
+
+    normalized_prefix = image_url_prefix.rstrip("/")
+    images_dir = output_root / "images"
+    images_dir.mkdir(parents=True)
+    tasks = []
+    manifest_records = []
+    for source_name, image_path, label_path, task_id, _, _, prediction, clipped_box_count in prepared_records:
+        target_image = images_dir / f"{task_id}{image_path.suffix.lower()}"
+        shutil.copy2(image_path, target_image)
+        tasks.append(
+            {
+                "id": task_id,
+                "data": {"image": f"{normalized_prefix}/{target_image.name}"},
+                "predictions": [prediction],
+            }
+        )
+        manifest_records.append(
+            {
+                "task_id": task_id,
+                "image": target_image.name,
+                "source": source_name,
+                "source_image": str(image_path),
+                "source_image_sha256": _sha256(image_path),
+                "source_label": str(label_path),
+                "source_label_sha256": _sha256(label_path),
+                "box_count": len(prediction["result"]),
+                "clipped_box_count": clipped_box_count,
+                "initial_label_type": "YOLO detection boxes",
+            }
+        )
+
+    label_config = """<View>\n  <Image name=\"image\" value=\"$image\"/>\n  <RectangleLabels name=\"tooth\" toName=\"image\">\n    <Label value=\"tooth\" background=\"#e74c3c\"/>\n  </RectangleLabels>\n</View>\n"""
+    (output_root / "tasks.json").write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_root / "label_config.xml").write_text(label_config, encoding="utf-8")
+    (output_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "v10",
+                "task": "Label Studio editable tooth detection pre-annotations",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "raw_root": str(raw_root),
+                "image_url_prefix": normalized_prefix,
+                "classes": expected_classes,
+                "task_count": len(tasks),
+                "records": manifest_records,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (output_root / "README.md").write_text(
+        "# Label Studio 导入与配置说明\n\n"
+        "本目录包含由 YOLO 牙齿检测框转换而来的可编辑矩形预标注。它不包含像素级分割掩码、FDI 牙位或氟斑牙分级；"
+        "导入后的已有框是待人工修订的 predictions，不是已完成的人工真值。\n\n"
+        "## 文件说明\n\n"
+        "- images/：供 Label Studio 显示的图像副本，文件名含数据源前缀以保持唯一。\n"
+        "- tasks.json：待导入任务及牙齿框预标注。\n"
+        "- label_config.xml：单类别 tooth 矩形框标注界面配置。\n"
+        "- manifest.json：任务 ID、源图像和源标签路径、SHA-256、框数及边界裁剪记录，用于复核追溯。\n\n"
+        "## 导入前的本地文件配置\n\n"
+        "tasks.json 中的图像地址形如：\n\n"
+        "```text\n/data/local-files/?d=images/<任务图像文件名>\n```\n\n"
+        "因此 Label Studio 的本地文件根目录必须设为本目录 output/to_labelstudio/，而不是其 images/ 子目录。"
+        "这样地址中的 images/... 才会解析到实际图像。\n\n"
+        "## 本机已验证配置\n\n"
+        "本机安装的 Label Studio 1.23.0 读取的变量名是 LOCAL_FILES_SERVING_ENABLED 和 LOCAL_FILES_DOCUMENT_ROOT。"
+        "不要使用 LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED 或 LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT，"
+        "这些变量不会被该版本读取。\n\n"
+        "当前 Windows 用户环境应配置为：\n\n"
+        "```text\n"
+        "LOCAL_FILES_SERVING_ENABLED=true\n"
+        "LOCAL_FILES_DOCUMENT_ROOT=D:\\papers\\medical-report-generation\\MRG-05-Tooth-Seg\\output\\to_labelstudio\n"
+        "```\n\n"
+        "配置只会被新启动的进程读取。关闭所有旧的 Label Studio 服务后，在新开的 PowerShell 中运行：\n\n"
+        "```powershell\nlabel-studio start --port 8080\n```\n\n"
+        "保持该窗口运行，打开 http://localhost:8080 并登录。若项目此前已导入任务，使用 Ctrl+F5 强制刷新后重新打开任务，"
+        "不需要重新导入 tasks.json。\n\n"
+        "## 项目 Local Files 存储关联\n\n"
+        "仅设置环境变量仍不足以使任务图像可访问。Label Studio 1.23.0 会检查请求路径是否已通过 Local Files import storage "
+        "关联到当前项目；未关联时服务会返回 HTTP 404，即使图像文件实际存在。\n\n"
+        "在项目中打开 Settings，进入 Cloud Storage，选择 Add Source Storage，类型选择 Local Files，并填写：\n\n"
+        "```text\n"
+        "Absolute local path:\n"
+        "D:\\papers\\medical-report-generation\\MRG-05-Tooth-Seg\\output\\to_labelstudio\\images\n"
+        "```\n\n"
+        "保存并验证连接后，不需要执行同步，也不要用这个存储再次导入任务；当前任务已经由 tasks.json 导入。"
+        "这个存储只用于授权 Label Studio 读取任务 URL 中的 images/<文件名>。新建复核项目时，需要按同样方式重新关联一次。\n\n"
+        "### 方式一：本机直接启动 Label Studio\n\n"
+        "在 PowerShell 中，将下列路径替换为本目录的绝对路径，并在同一个窗口启动 Label Studio：\n\n"
+        "```powershell\n"
+        "$env:LOCAL_FILES_SERVING_ENABLED = \"true\"\n"
+        "$env:LOCAL_FILES_DOCUMENT_ROOT = \"D:\\\\papers\\\\medical-report-generation\\\\MRG-05-Tooth-Seg\\\\output\\\\to_labelstudio\"\n"
+        "label-studio start\n"
+        "```\n\n"
+        "首次启动后访问 http://localhost:8080，注册或登录本地账号。以上命令适合临时覆盖配置；"
+        "长期使用时请按“本机已验证配置”写入 Windows 用户环境，并在新窗口中重新启动服务。\n\n"
+        "### 方式二：Docker 启动 Label Studio\n\n"
+        "在项目根目录的 PowerShell 中运行：\n\n"
+        "```powershell\n"
+        "docker run -it --rm -p 8080:8080 `\n"
+        "  -v \"${PWD}\\label-studio-data:/label-studio/data\" `\n"
+        "  -v \"${PWD}\\output\\to_labelstudio:/label-studio/data/to_labelstudio:ro\" `\n"
+        "  -e LOCAL_FILES_SERVING_ENABLED=true `\n"
+        "  -e LOCAL_FILES_DOCUMENT_ROOT=/label-studio/data/to_labelstudio `\n"
+        "  heartexlabs/label-studio:latest\n"
+        "```\n\n"
+        "只读挂载不会让 Label Studio 修改本导出包；人工标注结果会保存在 Label Studio 自身数据目录，之后应通过界面导出。\n\n"
+        "## 创建项目并导入\n\n"
+        "1. 打开 Label Studio，选择 Create Project。\n"
+        "2. 填写项目名称，例如 tooth-v10-review。\n"
+        "3. 在 Labeling Setup 中选择 Code，用本目录的 label_config.xml 全量替换编辑器内容，然后保存项目。"
+        "不要额外创建不同名称的标签；任务中的 from_name、to_name 与该配置必须一致。\n"
+        "4. 在 Settings -> Cloud Storage 中添加本目录 images/ 的 Local Files import storage，步骤见“项目 Local Files 存储关联”。\n"
+        "5. 进入项目后选择 Import，上传 tasks.json，等待导入完成。\n"
+        "6. 打开任意任务确认图像可显示，并确认红色 tooth 矩形框已显示为预测结果。"
+        "可拖动、缩放、删除或补充框后提交人工标注。\n\n"
+        "## 导入后核验\n\n"
+        f"导入任务数量应与 manifest.json 的 task_count 一致。本批导出为 {len(tasks)} 个任务；若数量不一致，"
+        "先检查是否只导入了部分文件。对照任务 ID、图像文件名和 manifest.json，可以定位到原始数据源及标签。\n\n"
+        "导出的框均已转换为百分比坐标。对于原始 YOLO 框越出图像边界的情况，导出时会裁剪到可见区域；"
+        "每个任务的数量记录在 manifest.json 的 clipped_box_count。\n\n"
+        "## 常见问题\n\n"
+        "### 导入后图像显示为损坏、403 或 404\n\n"
+        "检查本地文件服务已启用，且 LOCAL_FILES_DOCUMENT_ROOT 指向 output/to_labelstudio/。"
+        "不要将根目录设为 images/，否则 URL 中的 images/ 会被重复拼接。修改环境变量后必须重启 Label Studio。\n\n"
+        "在已登录状态下，任务里的相对地址会由 Label Studio 解析。不要用未登录的新浏览器窗口直接访问 /data/local-files/ "
+        "判断失败，因为该接口可能返回认证错误。\n\n"
+        "### 图像能显示，但看不到已有牙齿框\n\n"
+        "确认项目使用的是本目录的 label_config.xml，其中 RectangleLabels 的名称为 tooth，并重新导入未被修改的 tasks.json。"
+        "已有框位于 JSON 的 predictions 字段；它们需要人工审阅后才构成人工标注。\n\n"
+        "### 需要重新生成或重新导入\n\n"
+        "重新执行导出命令时使用 --overwrite。该操作只会重建 output/to_labelstudio/，不会修改 dataset/raw/。"
+        "重新导入同一批任务前，建议新建项目或先清理旧项目，以免任务重复。\n\n"
+        "## 人工复核后的数据管理\n\n"
+        "从 Label Studio 导出审核结果时，保留本目录的 manifest.json 与原始任务 ID。审核完成的数据应发布到新的版本化数据源目录，"
+        "例如 dataset/raw/manual-label-v10/，并在转换为 YOLO 格式后执行数据校验；不要覆盖现有 dataset/raw/ 中的历史来源。\n",
+        encoding="utf-8",
+    )
+    return output_root / "tasks.json"
 
 
 def export_pseudo_label_candidates(

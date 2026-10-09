@@ -9,7 +9,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from toothseg.data import validate_yolo_detection_dataset
+from toothseg.data import materialize_yolo_data_yaml, validate_yolo_detection_dataset
 from toothseg.pipeline import (
     export_to_label_studio,
     export_pseudo_labels,
@@ -54,7 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--overwrite", action="store_true")
 
     p = sub.add_parser("train")
-    p.add_argument("--data-yaml", type=Path, default=Path("dataset/data.yaml"))
+    data_group = p.add_mutually_exclusive_group(required=True)
+    data_group.add_argument("--data", type=Path, help="Dataset root; a runtime YAML is generated automatically.")
+    data_group.add_argument("--data-yaml", type=Path, help="Existing Ultralytics YAML (legacy option).")
     p.add_argument("--model", default="yolo11n.pt", help="Model name or checkpoint, e.g. yolo11s.pt or rtdetr-l.pt.")
     p.add_argument("--weights", type=Path, default=None)
     p.add_argument("--epochs", type=int, default=50)
@@ -67,7 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("val")
     p.add_argument("--weights", type=Path, required=True)
-    p.add_argument("--data-yaml", type=Path, default=Path("dataset/data.yaml"))
+    val_data_group = p.add_mutually_exclusive_group(required=True)
+    val_data_group.add_argument("--data", type=Path, help="Dataset root; a runtime YAML is generated automatically.")
+    val_data_group.add_argument("--data-yaml", type=Path, help="Existing Ultralytics YAML (legacy option).")
 
     p = sub.add_parser("predict")
     p.add_argument("--weights", type=Path, required=True)
@@ -113,9 +117,12 @@ def main() -> None:
     elif args.cmd == "to-labelstudio":
         print(export_to_label_studio(args.data, args.output, args.image_url_prefix, args.overwrite))
     elif args.cmd == "train":
+        data_yaml = args.data_yaml
+        if args.data is not None:
+            data_yaml = materialize_yolo_data_yaml(args.data, Path(args.project) / ".runtime")
         print(
             train(
-                args.data_yaml,
+                data_yaml,
                 model_name=args.model,
                 weights=args.weights,
                 epochs=args.epochs,
@@ -128,7 +135,10 @@ def main() -> None:
             )
         )
     elif args.cmd == "val":
-        print(validate(args.weights, args.data_yaml))
+        data_yaml = args.data_yaml
+        if args.data is not None:
+            data_yaml = materialize_yolo_data_yaml(args.data, Path("output") / ".runtime-val")
+        print(validate(args.weights, data_yaml))
     elif args.cmd == "predict":
         print(predict(args.weights, args.image, args.output, conf=args.conf, device=args.device))
     elif args.cmd == "predict-dir":

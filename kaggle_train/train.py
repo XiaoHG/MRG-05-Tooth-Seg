@@ -185,17 +185,15 @@ def main() -> None:
         )
     if args.dataset_mode == "raw" or (args.dataset_mode == "auto" and not prepared):
         data_root = prepare_dataset(args.dataset, args.repo_dir, args.output_dir, args.val_ratio, args.seed)
-        data_yaml = data_root / "data.yaml"
     else:
-        data_root, layout = located
-        data_yaml = materialize_prepared_data_yaml(data_root, args.output_dir, layout)
+        data_root, _layout = located
 
     command = [
         sys.executable,
         str(args.repo_dir / "cli" / "main.py"),
         "train",
-        "--data-yaml",
-        str(data_yaml),
+        "--data",
+        str(data_root),
         "--model",
         args.model,
         "--epochs",
