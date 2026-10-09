@@ -26,8 +26,9 @@ before/
   train/                    # 训练图像
   val/                      # 验证图像
   test/                     # 可选，无标签图像
-  annotations/train/        # 训练标签
-  annotations/val/          # 验证标签
+  labels/train/             # 训练标签
+  labels/val/               # 验证标签
+  labels/test/              # 测试标签（如有）
 ```
 
 通过 `--dataset` 传入数据集根目录即可。启动器会自动识别上述结构。对于第二种结构，脚本会将图像和标签复制到：

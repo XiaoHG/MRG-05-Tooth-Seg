@@ -60,8 +60,8 @@ def _prepared_layout(dataset_dir: Path) -> str | None:
         for relative in (
             "train",
             "val",
-            "annotations/train",
-            "annotations/val",
+            "labels/train",
+            "labels/val",
         )
     ):
         return "split"
@@ -112,7 +112,7 @@ def materialize_prepared_data_yaml(dataset_dir: Path, output_dir: Path, layout: 
             source = dataset_dir / (
                 relative.replace("images/", "", 1)
                 if relative.startswith("images/")
-                else relative.replace("labels/", "annotations/", 1)
+                else relative
             )
             # Ultralytics resolves image symlinks before deriving the label
             # path, which loses the images/labels directory convention.
@@ -180,7 +180,7 @@ def main() -> None:
     if args.dataset_mode == "prepared" and not prepared:
         raise SystemExit(
             "--dataset-mode prepared could not find a prepared dataset below "
-            f"{args.dataset}. Expected images/train + labels/train, or train + annotations/train."
+            f"{args.dataset}. Expected images/train + labels/train, or train + labels/train."
         )
     if args.dataset_mode == "raw" or (args.dataset_mode == "auto" and not prepared):
         data_root = prepare_dataset(args.dataset, args.repo_dir, args.output_dir, args.val_ratio, args.seed)
