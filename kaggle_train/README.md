@@ -41,7 +41,7 @@ before/
   labels/val/
 ```
 
-复制是必要的，因为 Ultralytics 会解析符号链接并根据 `images/` 推导 `labels/` 路径。原始 Kaggle Dataset 只读，不会被修改。
+复制是必要的，因为 Ultralytics 会解析符号链接并根据 `images/` 推导 `labels/` 路径。原始 Kaggle Dataset 只读，不会被修改。随后启动器将数据根目录传给仓库 CLI 的 `--data` 参数，由 CLI 在训练实验目录下生成运行时 YAML；不依赖数据集内已有的 `data.yaml`。
 
 ## Kaggle Notebook 用法
 
@@ -49,7 +49,7 @@ before/
 
 ```python
 !wget -q -O /kaggle/working/train.py \
-  https://raw.githubusercontent.com/XiaoHG/MRG-05-Tooth-Seg/f71045f/kaggle_train/train.py
+  https://raw.githubusercontent.com/XiaoHG/MRG-05-Tooth-Seg/main/kaggle_train/train.py
 ```
 
 先运行 1 个 epoch 验证路径、标签和 GPU：
@@ -84,10 +84,10 @@ before/
   --name omni-coco-before
 ```
 
-运行日志中应看到训练数据位于：
+运行日志中应看到训练数据位于类似以下的运行时视图：
 
 ```text
-/kaggle/working/toothseg-output/dataset-view/images/train
+/kaggle/working/toothseg-output/train/smoke-test/.runtime/dataset-view/images/train
 ```
 
 如果日志仍显示直接读取 `/kaggle/input/.../before/train`，说明 Notebook 使用了旧版启动器，需要重新执行上面的 `wget`。
@@ -112,9 +112,14 @@ before/
 
 ```text
 /kaggle/working/toothseg-output/
-  dataset-view/
-  dataset.yaml
   train/<experiment-name>/
+    .runtime/
+      dataset-view/
+        images/train/
+        images/val/
+        labels/train/
+        labels/val/
+      dataset.yaml
     weights/best.pt
     weights/last.pt
     args.yaml
