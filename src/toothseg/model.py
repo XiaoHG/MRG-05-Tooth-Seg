@@ -64,7 +64,10 @@ def _predict_image_with_model(
     kwargs: dict[str, Any] = {"source": str(image_path), "conf": conf, "verbose": False}
     if device:
         kwargs["device"] = device
-    result = model.predict(**kwargs)[0]
+    results = model.predict(**kwargs)
+    if not results:
+        raise ValueError(f"Image could not be decoded by Ultralytics: {image_path}")
+    result = results[0]
 
     source = Image.open(image_path).convert("RGB")
     image = source.copy()
@@ -154,10 +157,14 @@ def predict_directory(
     for index, image_path in enumerate(image_paths, start=1):
         relative_path = image_path.relative_to(image_dir)
         print(f"[{index}/{total}] {relative_path.as_posix()}")
-        if device:
-            result = predict_image(weights, image_path, conf=conf, device=device)
-        else:
-            result = predict_image(weights, image_path, conf=conf)
+        try:
+            if device:
+                result = predict_image(weights, image_path, conf=conf, device=device)
+            else:
+                result = predict_image(weights, image_path, conf=conf)
+        except (OSError, ValueError, IndexError) as exc:
+            print(f"WARNING Skipping unreadable image {relative_path.as_posix()}: {exc}")
+            continue
         outputs.append(
             save_prediction(
                 result,
@@ -202,10 +209,18 @@ def predict_directory_visualizations(
     for index, image_path in enumerate(image_paths, start=1):
         relative_path = image_path.relative_to(image_dir)
         print(f"[{index}/{total}] {relative_path.as_posix()}")
-        if device:
-            result = _predict_image_with_model(model, image_path, conf=conf, device=device)
-        else:
-            result = _predict_image_with_model(model, image_path, conf=conf)
+        try:
+            if device:
+                result = _predict_image_with_model(model, image_path, conf=conf, device=device)
+            else:
+                result = _predict_image_with_model(model, image_path, conf=conf)
+        except (OSError, ValueError, IndexError) as exc:
+            print(f"WARNING Skipping unreadable image {relative_path.as_posix()}: {exc}")
+            predictions[image_path.name] = {
+                "source_image": relative_path.as_posix(),
+                "error": str(exc),
+            }
+            continue
         overlay_path = output_dir / f"{image_path.stem}_overlay.png"
         result["image"].save(overlay_path)
         predictions[image_path.name] = {

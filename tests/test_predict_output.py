@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 import toothseg.model as model
 from toothseg.model import save_prediction
@@ -51,3 +53,72 @@ def test_predict_directory_recurses_and_preserves_relative_paths(tmp_path, monke
 
     first_payload = (tmp_path / "predict" / "same" / "same_detections.json").read_text(encoding="utf-8")
     assert '"source_image": "first/same.png"' in first_payload
+
+
+def test_predict_directory_visualizations_writes_flat_overlays_and_aggregate_json(tmp_path, monkeypatch):
+    image_dir = tmp_path / "images"
+    (image_dir / "nested").mkdir(parents=True)
+    for path in (image_dir / "mouth.png", image_dir / "nested" / "molar.jpg"):
+        Image.new("RGB", (32, 24), "white").save(path)
+
+    def fake_predict_with_model(_, image_path, conf=0.25):
+        source = Image.open(image_path).convert("RGB")
+        return {
+            "image": source.copy(),
+            "source": source,
+            "boxes": [[1.0, 2.0, 20.0, 18.0]],
+            "confs": [0.9],
+        }
+
+    monkeypatch.setattr(model, "_require_ultralytics", lambda: lambda _: object())
+    monkeypatch.setattr(model, "_predict_image_with_model", fake_predict_with_model)
+    predictions_path = model.predict_directory_visualizations(
+        Path("weights.pt"), image_dir, tmp_path / "predict"
+    )
+
+    assert predictions_path == tmp_path / "predict" / "predictions.json"
+    assert (tmp_path / "predict" / "mouth_overlay.png").exists()
+    assert (tmp_path / "predict" / "molar_overlay.png").exists()
+    assert not list((tmp_path / "predict").glob("*_original.png"))
+    assert not list((tmp_path / "predict").glob("*.txt"))
+    payload = json.loads(predictions_path.read_text(encoding="utf-8"))
+    assert payload["mouth.png"] == {
+        "source_image": "mouth.png",
+        "visualization": "mouth_overlay.png",
+        "detections": [{"index": 1, "confidence": 0.9, "box_xyxy": [1.0, 2.0, 20.0, 18.0]}],
+    }
+    assert payload["molar.jpg"]["source_image"] == "nested/molar.jpg"
+
+
+def test_predict_directory_visualizations_rejects_duplicate_names(tmp_path):
+    image_dir = tmp_path / "images"
+    (image_dir / "first").mkdir(parents=True)
+    (image_dir / "second").mkdir()
+    Image.new("RGB", (32, 24), "white").save(image_dir / "first" / "same.png")
+    Image.new("RGB", (32, 24), "white").save(image_dir / "second" / "same.png")
+
+    with pytest.raises(ValueError, match="Duplicate image names"):
+        model.predict_directory_visualizations(Path("weights.pt"), image_dir, tmp_path / "predict")
+
+
+def test_predict_directory_visualizations_skips_unreadable_images(tmp_path, monkeypatch):
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    Image.new("RGB", (32, 24), "white").save(image_dir / "good.png")
+    (image_dir / "broken.jpg").write_bytes(b"not an image")
+
+    def fake_predict_with_model(_, image_path, conf=0.25):
+        if image_path.suffix == ".jpg":
+            raise ValueError(f"Image could not be decoded by Ultralytics: {image_path}")
+        source = Image.open(image_path).convert("RGB")
+        return {"image": source.copy(), "source": source, "boxes": [], "confs": []}
+
+    monkeypatch.setattr(model, "_require_ultralytics", lambda: lambda _: object())
+    monkeypatch.setattr(model, "_predict_image_with_model", fake_predict_with_model)
+    predictions_path = model.predict_directory_visualizations(
+        Path("weights.pt"), image_dir, tmp_path / "predict"
+    )
+
+    payload = json.loads(predictions_path.read_text(encoding="utf-8"))
+    assert "good.png" in payload
+    assert payload["broken.jpg"]["error"]
