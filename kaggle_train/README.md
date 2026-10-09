@@ -60,6 +60,7 @@ before/
   --repo-ref main \
   --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after/before \
   --dataset-mode prepared \
+  --model yolo11n.pt \
   --epochs 1 \
   --imgsz 640 \
   --batch 1 \
@@ -75,6 +76,7 @@ before/
   --repo-ref main \
   --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after/before \
   --dataset-mode prepared \
+  --model yolo11n.pt \
   --epochs 50 \
   --imgsz 1024 \
   --batch -1 \
@@ -98,6 +100,7 @@ before/
 | `--repo-ref` | branch、tag 或 commit；正式实验建议使用 commit |
 | `--dataset` | Kaggle Dataset 中传入的实际数据根目录 |
 | `--dataset-mode prepared` | 使用已有 train/val 划分，不重新划分数据 |
+| `--model` | Ultralytics 模型名或配置，例如 `yolo11n.pt`、`yolo11s.pt`、`rtdetr-l.pt` |
 | `--epochs` | 训练轮数 |
 | `--imgsz` | 输入尺寸；显存不足时可改为 640 |
 | `--batch` | `-1` 自动选择，显存不足时可改为 1 或 2 |
@@ -124,5 +127,6 @@ before/
 
 - Kaggle Notebook 需要开启 Internet，脚本要从 GitHub clone 项目并安装 `ultralytics`。
 - `/kaggle/input` 是只读目录，训练输出写入 `/kaggle/working`。
-- `test` 图像没有标签，不能用于计算 mAP、precision 或 recall。
+- 当前 `test` 图像配有 `labels/test`，应在模型和参数确定后作为独立最终评估集；不要在调参阶段反复使用 test 指标。
 - `best.pt` 用于初始化新的训练实验；中断恢复应使用 Ultralytics 的 `last.pt` 恢复机制，不能混淆两者语义。
+- 当前启动器的 `--model` 适用于 Ultralytics 支持的 YOLO/RT-DETR 模型；Faster R-CNN、标准 DETR 和 Mask R-CNN 需要独立训练适配器，不能直接传入 `--model`。

@@ -153,6 +153,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-dir", type=Path, default=DEFAULT_REPO_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--weights", type=Path, default=None)
+    parser.add_argument("--model", default="yolo11n.pt", help="Ultralytics model name or checkpoint.")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--imgsz", type=int, default=1024)
     parser.add_argument("--batch", type=int, default=-1)
@@ -195,6 +196,8 @@ def main() -> None:
         "train",
         "--data-yaml",
         str(data_yaml),
+        "--model",
+        args.model,
         "--epochs",
         str(args.epochs),
         "--imgsz",

@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("train")
     p.add_argument("--data-yaml", type=Path, default=Path("dataset/data.yaml"))
+    p.add_argument("--model", default="yolo11n.pt", help="Model name or checkpoint, e.g. yolo11s.pt or rtdetr-l.pt.")
     p.add_argument("--weights", type=Path, default=None)
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--imgsz", type=int, default=1024)
@@ -115,6 +116,7 @@ def main() -> None:
         print(
             train(
                 args.data_yaml,
+                model_name=args.model,
                 weights=args.weights,
                 epochs=args.epochs,
                 imgsz=args.imgsz,

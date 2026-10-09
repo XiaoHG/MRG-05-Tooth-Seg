@@ -31,9 +31,10 @@ def train_yolo_detection(
     project: str = "output/train",
     name: str = "tooth-detect-v5",
     weights: Path | None = None,
+    model_name: str = "yolo11n.pt",
 ) -> Path:
     YOLO = _require_ultralytics()
-    model = YOLO(str(weights) if weights is not None else "yolo11n.pt")
+    model = YOLO(str(weights) if weights is not None else model_name)
     project_path = Path(project).resolve()
     kwargs: dict[str, Any] = {
         "data": str(data_yaml),

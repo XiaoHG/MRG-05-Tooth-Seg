@@ -65,9 +65,11 @@ def train(
     project: str = "output/train",
     name: str = "tooth-detect-v5",
     weights: Path | None = None,
+    model_name: str = "yolo11n.pt",
 ) -> Path:
     return train_yolo_detection(
         data_yaml,
+        model_name=model_name,
         weights=weights,
         epochs=epochs,
         imgsz=imgsz,
