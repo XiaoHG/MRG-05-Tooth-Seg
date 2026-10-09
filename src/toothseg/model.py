@@ -75,13 +75,55 @@ def _predict_image_with_model(
     draw = ImageDraw.Draw(image)
     boxes = []
     confs = []
+    class_ids = []
+    class_names = []
     if result.boxes is not None:
-        for box, score in zip(result.boxes.xyxy.tolist(), result.boxes.conf.tolist()):
+        raw_classes = result.boxes.cls.tolist() if getattr(result.boxes, "cls", None) is not None else []
+        names = getattr(result, "names", {}) or {}
+        for index, (box, score) in enumerate(zip(result.boxes.xyxy.tolist(), result.boxes.conf.tolist())):
             x1, y1, x2, y2 = map(float, box)
             boxes.append([x1, y1, x2, y2])
             confs.append(float(score))
+            class_id = int(raw_classes[index]) if index < len(raw_classes) else 0
+            class_ids.append(class_id)
+            class_names.append(str(names.get(class_id, class_id)) if isinstance(names, dict) else str(class_id))
             draw.rectangle((x1, y1, x2, y2), outline="red", width=3)
-    return {"image": image, "source": source, "boxes": boxes, "confs": confs, "raw": result}
+    return {
+        "image": image,
+        "source": source,
+        "boxes": boxes,
+        "confs": confs,
+        "class_ids": class_ids,
+        "class_names": class_names,
+        "raw": result,
+    }
+
+
+def _detection_records(result: dict[str, Any]) -> list[dict[str, Any]]:
+    source = result["source"]
+    class_ids = result.get("class_ids", [])
+    class_names = result.get("class_names", [])
+    records = []
+    for index, (box, score) in enumerate(zip(result["boxes"], result["confs"]), start=1):
+        x1, y1, x2, y2 = map(float, box)
+        class_id = int(class_ids[index - 1]) if index - 1 < len(class_ids) else 0
+        class_name = class_names[index - 1] if index - 1 < len(class_names) else "tooth"
+        records.append(
+            {
+                "index": index,
+                "class_id": class_id,
+                "class_name": class_name,
+                "confidence": float(score),
+                "box_xyxy": [x1, y1, x2, y2],
+                "box_normalized_xywh": [
+                    ((x1 + x2) / 2) / source.width,
+                    ((y1 + y2) / 2) / source.height,
+                    (x2 - x1) / source.width,
+                    (y2 - y1) / source.height,
+                ],
+            }
+        )
+    return records
 
 
 def predict_image(
@@ -109,7 +151,10 @@ def save_prediction(
     image.save(overlay_path)
 
     payload_boxes = []
-    for idx, (box, score) in enumerate(zip(result["boxes"], result["confs"]), start=1):
+    for detection in _detection_records(result):
+        idx = detection["index"]
+        box = detection["box_xyxy"]
+        score = detection["confidence"]
         x1, y1, x2, y2 = box
         left = max(0, int(np.floor(x1)))
         top = max(0, int(np.floor(y1)))
@@ -120,16 +165,15 @@ def save_prediction(
         crop = source.crop((left, top, right, bottom))
         crop_path = sample_dir / f"{stem}_{idx}.png"
         crop.save(crop_path)
-        payload_boxes.append(
-            {
-                "index": idx,
-                "confidence": score,
-                "box_xyxy": [x1, y1, x2, y2],
-                "crop": crop_path.name,
-            }
-        )
+        detection["crop"] = crop_path.name
+        payload_boxes.append(detection)
 
-    payload = {"image": stem, "detections": payload_boxes}
+    payload = {
+        "image": stem,
+        "image_width": source.width,
+        "image_height": source.height,
+        "detections": payload_boxes,
+    }
     if source_path is not None:
         payload["source_image"] = source_path.as_posix()
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -154,6 +198,7 @@ def predict_directory(
         raise ValueError(f"No supported images found in: {image_dir}")
 
     outputs: list[dict[str, Path]] = []
+    predictions: dict[str, dict[str, Any]] = {}
     total = len(image_paths)
     for index, image_path in enumerate(image_paths, start=1):
         relative_path = image_path.relative_to(image_dir)
@@ -166,14 +211,24 @@ def predict_directory(
         except (OSError, ValueError, IndexError) as exc:
             print(f"WARNING Skipping unreadable image {relative_path.as_posix()}: {exc}")
             continue
-        outputs.append(
-            save_prediction(
+        saved = save_prediction(
                 result,
                 output_dir,
                 image_path.stem,
                 source_path=relative_path,
-            )
         )
+        outputs.append(saved)
+        predictions[relative_path.as_posix()] = {
+            "source_image": relative_path.as_posix(),
+            "image_width": result["source"].width,
+            "image_height": result["source"].height,
+            "json": str(saved["json"].relative_to(output_dir).as_posix()),
+            "detections": _detection_records(result),
+        }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "predictions.json").write_text(
+        json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return outputs
 
 
@@ -227,14 +282,9 @@ def predict_directory_visualizations(
         predictions[image_path.name] = {
             "source_image": relative_path.as_posix(),
             "visualization": overlay_path.name,
-            "detections": [
-                {
-                    "index": detection_index,
-                    "confidence": score,
-                    "box_xyxy": box,
-                }
-                for detection_index, (box, score) in enumerate(zip(result["boxes"], result["confs"]), start=1)
-            ],
+            "image_width": result["source"].width,
+            "image_height": result["source"].height,
+            "detections": _detection_records(result),
         }
 
     predictions_path = output_dir / "predictions.json"

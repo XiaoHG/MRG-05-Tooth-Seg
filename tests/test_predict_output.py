@@ -53,6 +53,8 @@ def test_predict_directory_recurses_and_preserves_relative_paths(tmp_path, monke
 
     first_payload = (tmp_path / "predict" / "same" / "same_detections.json").read_text(encoding="utf-8")
     assert '"source_image": "first/same.png"' in first_payload
+    aggregate = json.loads((tmp_path / "predict" / "predictions.json").read_text(encoding="utf-8"))
+    assert aggregate["first/same.png"]["detections"] == []
 
 
 def test_predict_directory_visualizations_writes_flat_overlays_and_aggregate_json(tmp_path, monkeypatch):
@@ -82,11 +84,18 @@ def test_predict_directory_visualizations_writes_flat_overlays_and_aggregate_jso
     assert not list((tmp_path / "predict").glob("*_original.png"))
     assert not list((tmp_path / "predict").glob("*.txt"))
     payload = json.loads(predictions_path.read_text(encoding="utf-8"))
-    assert payload["mouth.png"] == {
-        "source_image": "mouth.png",
-        "visualization": "mouth_overlay.png",
-        "detections": [{"index": 1, "confidence": 0.9, "box_xyxy": [1.0, 2.0, 20.0, 18.0]}],
-    }
+    assert payload["mouth.png"]["source_image"] == "mouth.png"
+    assert payload["mouth.png"]["image_width"] == 32
+    assert payload["mouth.png"]["detections"] == [
+        {
+            "index": 1,
+            "class_id": 0,
+            "class_name": "tooth",
+            "confidence": 0.9,
+            "box_xyxy": [1.0, 2.0, 20.0, 18.0],
+            "box_normalized_xywh": [0.328125, 0.4166666666666667, 0.59375, 0.6666666666666666],
+        }
+    ]
     assert payload["molar.jpg"]["source_image"] == "nested/molar.jpg"
 
 

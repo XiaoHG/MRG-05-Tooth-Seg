@@ -203,7 +203,7 @@ python cli/main.py predict-visualize \
   --device 0
 ```
 
-`predict` 和 `predict-dir` 为每张图像生成原图、检测框叠加图、检测 JSON 和牙齿裁剪图。`predict-visualize` 生成扁平化叠加图和聚合的 `predictions.json`。
+`predict` 和 `predict-dir` 为每张图像生成原图、检测框叠加图、检测 JSON 和牙齿裁剪图；目录推理还会在输出根目录生成汇总的 `predictions.json`。`predict-visualize` 生成扁平化叠加图和聚合的 `predictions.json`。每条检测记录包含 `class_id`、`class_name`、`confidence`、像素坐标 `box_xyxy` 和与训练标签对应的归一化 `box_normalized_xywh`，便于和标注及不同模型结果进行对比。
 
 批量推理遇到无法解码的图片时会跳过该图片并在聚合 JSON 中记录 `error`，不会中断剩余任务。`--device 0` 才会显式使用第一块 CUDA GPU；图片读取、绘制和保存仍由 CPU 完成。
 
