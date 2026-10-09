@@ -261,6 +261,12 @@ def predict_directory_visualizations(
     YOLO = _require_ultralytics()
     model = YOLO(str(weights))
     predictions: dict[str, dict[str, Any]] = {}
+
+    def write_predictions() -> None:
+        predictions_path = output_dir / "predictions.json"
+        predictions_path.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    write_predictions()
     total = len(image_paths)
     for index, image_path in enumerate(image_paths, start=1):
         relative_path = image_path.relative_to(image_dir)
@@ -276,6 +282,7 @@ def predict_directory_visualizations(
                 "source_image": relative_path.as_posix(),
                 "error": str(exc),
             }
+            write_predictions()
             continue
         overlay_path = output_dir / f"{image_path.stem}_overlay.png"
         result["image"].save(overlay_path)
@@ -286,7 +293,6 @@ def predict_directory_visualizations(
             "image_height": result["source"].height,
             "detections": _detection_records(result),
         }
-
+        write_predictions()
     predictions_path = output_dir / "predictions.json"
-    predictions_path.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
     return predictions_path
