@@ -87,7 +87,7 @@ def _predict_image_with_model(
             class_id = int(raw_classes[index]) if index < len(raw_classes) else 0
             class_ids.append(class_id)
             class_names.append(str(names.get(class_id, class_id)) if isinstance(names, dict) else str(class_id))
-            draw.rectangle((x1, y1, x2, y2), outline="green", width=4)
+            draw.rectangle((x1, y1, x2, y2), outline="#FFFF00", width=5)
     return {
         "image": image,
         "source": source,
