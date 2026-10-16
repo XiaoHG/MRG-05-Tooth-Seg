@@ -10,6 +10,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from toothseg.data import materialize_yolo_data_yaml, validate_yolo_detection_dataset
+from toothseg.model_catalog import format_model_catalog
 from toothseg.pipeline import (
     export_to_label_studio,
     export_pseudo_labels,
@@ -29,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("validate")
     p.add_argument("--data", type=Path, default=Path("dataset"))
+
+    sub.add_parser("models", help="List comparison models and backend readiness.")
 
     p = sub.add_parser("prepare")
     p.add_argument("--data", type=Path, default=Path("dataset/raw"))
@@ -104,6 +107,8 @@ def main() -> None:
     if args.cmd == "validate":
         summary = validate_yolo_detection_dataset(args.data)
         print(summary)
+    elif args.cmd == "models":
+        print(format_model_catalog())
     elif args.cmd == "prepare":
         path = prepare_dataset(
             args.data, args.output, val_ratio=args.val_ratio, seed=args.seed,

@@ -8,9 +8,9 @@
 
 - 检测类别只有 `tooth`，类别 ID 为 `0`。
 - 标签格式为 `class x_center y_center width height`，坐标归一化到 `[0, 1]`。
-- 当前训练入口基于 Ultralytics，支持通过 `--model` 选择 Ultralytics 模型，例如 `yolo11n.pt`、`yolo11s.pt` 和 `rtdetr-l.pt`。
+- 当前训练入口基于 Ultralytics，支持通过 `--model` 选择已适配模型，例如 `yolo11n.pt`、`yolo11s.pt`、`yolov8m.pt`、`yolo26m.pt` 和 `rtdetr-l.pt`。
 - `--weights` 用于加载已有权重初始化训练；当同时提供 `--model` 和 `--weights` 时，已有权重优先。
-- Faster R-CNN、标准 DETR 和完整 Mask R-CNN 尚未接入当前 CLI。Mask R-CNN 还需要真实实例分割掩码，不能用矩形框伪造掩码作为正式分割实验。
+- Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 已登记为待适配模型，但尚未接入当前 CLI；它们需要独立的数据适配器、训练循环、权重加载和评估接口。Mask R-CNN 还需要真实实例分割掩码，不能用矩形框伪造掩码作为正式分割实验。
 - Kaggle 启动器支持当前 OMNI 数据目录，并会在工作目录生成标准 YOLO 数据视图。
 
 ## 数据集
@@ -97,10 +97,25 @@ python cli/main.py validate --data <dataset-view>
 
 ## 本地训练
 
+查看模型目录及当前后端适配状态：
+
+```bash
+python cli/main.py models
+```
+
+当前可直接训练的新增模型示例：
+
+```bash
+python cli/main.py train --data dataset/OMNI_COCO/after --model yolov8m.pt --epochs 50 --project output/train --name omni-coco-after-yolov8m
+python cli/main.py train --data dataset/OMNI_COCO/after --model yolo26m.pt --epochs 50 --project output/train --name omni-coco-after-yolo26m
+```
+
+Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 目前会在训练启动前明确提示“待适配”，不会被错误地当作 Ultralytics 模型运行。
+
 使用默认 YOLO11n：
 
 ```bash
-python cli/main.py train --data dataset/OMNI_COCO/before --model yolo11n.pt --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/train --name omni-coco-after-yolo11n
+python cli/main.py train --data dataset/OMNI_COCO/before --model yolov26m.pt --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/smoke --name omni-coco-before-yolov26m
 ```
 
 使用同系列更大模型：
@@ -162,7 +177,7 @@ output/train/omni-coco-after-result/toothseg-output/train/omni-coco-after/
 ```bash
 python cli/main.py val \
   --weights output/train/omni-coco-after-yolo11n/weights/best.pt \
-  --data-yaml dataset/data.yaml
+  --data dataset/OMNI_COCO/after
 ```
 
 模型选择和调参使用 `val`。最终模型确定后，使用包含 `test` 路径和标签的标准数据视图进行一次独立测试评估。当前 CLI 的 `val` 命令默认调用 Ultralytics 的 `val` split；如需评估 `test`，应准备将 `test` 设为评估 split 的 YAML，或直接使用 Ultralytics API/命令指定 `split=test`。
@@ -190,6 +205,8 @@ python cli/main.py predict-dir \
   --output output/predict \
   --conf 0.25 \
   --device 0
+
+python cli/main.py predict-visualize --weights output/train/rtdetr-l/omni-coco-rtdetr-l-after-v4-result/toothseg-output/train/omni-coco-rtdetr-l-after-v4/weights/best.pt --image-dir dataset/OMNI_COCO/after/images/test --output output/predict/rtdetr-l/after --conf 0.25 --device 0
 ```
 
 聚合可视化推理：
@@ -231,6 +248,36 @@ Kaggle 训练文件位于 `kaggle_train/train.py`。建议从 GitHub 下载最�
   --device 0 \
   --name smoke-test
 ```
+
+## Colab 训练
+
+Google Colab 训练文件位于 `colab_train/train.py`，Notebook 位于 `colab_train/omni-coco-tooth-train.ipynb`。Colab 版本支持 `/content` 和 Google Drive 路径，长期保留的输出建议写入 Drive：
+
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+```
+
+下载并运行 Colab 启动器：
+
+```python
+!wget -q -O /content/train.py \\
+  https://raw.githubusercontent.com/XiaoHG/MRG-05-Tooth-Seg/main/colab_train/train.py
+
+!python /content/train.py \\
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \\
+  --repo-ref main \\
+  --dataset /content/drive/MyDrive/tooth-dataset/after \\
+  --dataset-mode prepared \\
+  --model yolo11n.pt \\
+  --epochs 1 \\
+  --imgsz 640 \\
+  --batch 1 \\
+  --device 0 \\
+  --name smoke-test
+```
+
+冒烟测试通过后再改用正式训练参数。使用 `--output-dir /content/drive/MyDrive/toothseg-output` 可直接保存实验结果；也支持 `--weights`、`yolov8m.pt`、`yolo26m.pt` 和 `rtdetr-l.pt`。
 
 正式训练只需将 `--epochs`、`--imgsz`、`--batch` 和 `--name` 改为正式配置。训练输出位于：
 
@@ -274,9 +321,9 @@ python -m pytest -q
 
 ## 当前限制与后续计划
 
-- 当前核心实现仍是 Ultralytics 训练/推理流程，非 YOLO 架构尚未统一接入。
-- Faster R-CNN 和标准 DETR 需要独立的数据适配器、训练循环、权重加载和评估接口。
-- Mask R-CNN 需要人工实例掩码；当前边界框标签不足以支持可信的分割实验。
+- 当前核心实现仍是 Ultralytics 训练/推理流程，已适配 YOLO11、YOLOv8m、YOLO26m 和 RT-DETR-L。
+- Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 已登记在 `python cli/main.py models` 的模型目录中，但仍需要独立的数据适配器、训练循环、权重加载和评估接口，当前 CLI 会在启动前明确拒绝这些模型。
+- Mask R-CNN 需要真实实例分割掩码；当前矩形框标签不足以支持正式分割实验。
 - `test` 标签可用于最终评估，但不能在模型选择阶段反复使用。
 - 伪标签、无标签图像和推理可视化不能替代固定人工真值验证集。
 - 项目是科研检测基线，不是临床诊断系统。

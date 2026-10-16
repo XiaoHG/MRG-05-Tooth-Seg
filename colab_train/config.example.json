@@ -1,0 +1,13 @@
+{
+  "repo_url": "https://github.com/XiaoHG/MRG-05-Tooth-Seg.git",
+  "repo_ref": "main",
+  "dataset": "/content/drive/MyDrive/tooth-dataset/after",
+  "dataset_mode": "prepared",
+  "output_dir": "/content/toothseg-output",
+  "model": "yolo11n.pt",
+  "epochs": 50,
+  "imgsz": 1024,
+  "batch": -1,
+  "device": "0",
+  "name": "tooth-detect-colab"
+}

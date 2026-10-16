@@ -12,6 +12,8 @@ if os.name == "nt":
 import numpy as np
 from PIL import Image, ImageDraw
 
+from .model_catalog import require_trainable_model
+
 
 def _require_ultralytics() -> Any:
     try:
@@ -34,6 +36,7 @@ def train_yolo_detection(
     model_name: str = "yolo11n.pt",
 ) -> Path:
     YOLO = _require_ultralytics()
+    require_trainable_model(model_name)
     model = YOLO(str(weights) if weights is not None else model_name)
     project_path = Path(project).resolve()
     kwargs: dict[str, Any] = {
