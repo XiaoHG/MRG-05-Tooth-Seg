@@ -117,7 +117,7 @@ RT-DETR-L 或已有权重也可以选择：
 | `--repo-url` | Git 仓库地址，必须可从 Colab 访问 |
 | `--repo-ref` | branch、tag 或 commit；正式实验建议使用固定 commit |
 | `--dataset` | `/content` 或 Google Drive 中的数据根目录 |
-| `--dataset-mode` | `prepared` 使用已有 train/val；`raw` 由项目 CLI 准备；`auto` 自动判断 |
+| `--dataset-mode` | `prepared` 使用已有 train/val；`raw` 由项目 CLI 准备；`yaml` 直接使用 `--dataset` 指定的 `.yaml/.yml`；`auto` 自动判断 |
 | `--model` | Ultralytics 模型名或配置，如 `yolo11n.pt`、`yolo11s.pt`、`rtdetr-l.pt` |
 | `--weights` | 可选的初始 `.pt` 权重 |
 | `--epochs` | 训练轮数 |

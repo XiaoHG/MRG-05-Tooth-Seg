@@ -114,7 +114,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-url", default=os.environ.get("TOOTHSEG_REPO_URL"), required=False)
     parser.add_argument("--repo-ref", default=os.environ.get("TOOTHSEG_REPO_REF", "main"))
     parser.add_argument("--dataset", type=Path, required=True, help="Dataset path in /content or mounted Drive.")
-    parser.add_argument("--dataset-mode", choices=("auto", "prepared", "raw"), default="auto")
+    parser.add_argument(
+        "--dataset-mode",
+        choices=("auto", "prepared", "raw", "yaml"),
+        default="auto",
+        help="yaml uses --dataset as an existing Ultralytics data YAML file.",
+    )
     parser.add_argument("--repo-dir", type=Path, default=DEFAULT_REPO_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--weights", type=Path, default=None)
@@ -141,19 +146,24 @@ def main() -> None:
     clone_repository(args.repo_url, args.repo_ref, args.repo_dir)
     install_repository(args.repo_dir)
 
-    located = locate_prepared_dataset(args.dataset)
-    prepared = located is not None
-    if args.dataset_mode == "prepared" and not prepared:
-        raise SystemExit(
-            "--dataset-mode prepared could not find a prepared dataset below "
-            f"{args.dataset}. Expected images/train + labels/train, or train + labels/train."
-        )
-    if args.dataset_mode == "raw" or (args.dataset_mode == "auto" and not prepared):
-        prepared_root = prepare_dataset(args.dataset, args.repo_dir, args.output_dir, args.val_ratio, args.seed)
-        data_yaml = materialize_prepared_data_yaml(prepared_root, args.output_dir / ".runtime", "images")
+    if args.dataset_mode == "yaml":
+        if not args.dataset.is_file() or args.dataset.suffix.lower() not in {".yaml", ".yml"}:
+            raise SystemExit("--dataset-mode yaml requires --dataset to be an existing .yaml or .yml file.")
+        data_yaml = args.dataset.resolve()
     else:
-        data_root, layout = located
-        data_yaml = materialize_prepared_data_yaml(data_root, args.output_dir / ".runtime", layout)
+        located = locate_prepared_dataset(args.dataset)
+        prepared = located is not None
+        if args.dataset_mode == "prepared" and not prepared:
+            raise SystemExit(
+                "--dataset-mode prepared could not find a prepared dataset below "
+                f"{args.dataset}. Expected images/train + labels/train, or train + labels/train."
+            )
+        if args.dataset_mode == "raw" or (args.dataset_mode == "auto" and not prepared):
+            prepared_root = prepare_dataset(args.dataset, args.repo_dir, args.output_dir, args.val_ratio, args.seed)
+            data_yaml = materialize_prepared_data_yaml(prepared_root, args.output_dir / ".runtime", "images")
+        else:
+            data_root, layout = located
+            data_yaml = materialize_prepared_data_yaml(data_root, args.output_dir / ".runtime", layout)
 
     command = [
         sys.executable, str(args.repo_dir / "cli" / "main.py"), "train",
