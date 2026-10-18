@@ -84,6 +84,36 @@ before/
   --name omni-coco-before
 ```
 
+使用 YOLOv8m 或 YOLO26m 时，只需替换 `--model` 和实验名称；YOLO26m 需要当前安装的 Ultralytics 版本提供该模型：
+
+```python
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after/before \
+  --dataset-mode prepared \
+  --model yolov8m.pt \
+  --epochs 50 \
+  --imgsz 1024 \
+  --batch -1 \
+  --device 0 \
+  --name omni-coco-before-yolov8m
+```
+
+```python
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after/before \
+  --dataset-mode prepared \
+  --model yolo26m.pt \
+  --epochs 50 \
+  --imgsz 1024 \
+  --batch -1 \
+  --device 0 \
+  --name omni-coco-before-yolo26m
+```
+
 运行日志中应看到训练数据位于类似以下的运行时视图：
 
 ```text
@@ -100,7 +130,7 @@ before/
 | `--repo-ref` | branch、tag 或 commit；正式实验建议使用 commit |
 | `--dataset` | Kaggle Dataset 中传入的实际数据根目录 |
 | `--dataset-mode prepared` | 使用已有 train/val 划分，不重新划分数据 |
-| `--model` | Ultralytics 模型名或配置，例如 `yolo11n.pt`、`yolo11s.pt`、`rtdetr-l.pt` |
+| `--model` | Ultralytics 模型名或配置，例如 `yolo11n.pt`、`yolo11s.pt`、`yolov8m.pt`、`yolo26m.pt`、`rtdetr-l.pt` |
 | `--epochs` | 训练轮数 |
 | `--imgsz` | 输入尺寸；显存不足时可改为 640 |
 | `--batch` | `-1` 自动选择，显存不足时可改为 1 或 2 |

@@ -103,19 +103,10 @@ python cli/main.py validate --data <dataset-view>
 python cli/main.py models
 ```
 
-当前可直接训练的新增模型示例：
-
-```bash
-python cli/main.py train --data dataset/OMNI_COCO/after --model yolov8m.pt --epochs 50 --project output/train --name omni-coco-after-yolov8m
-python cli/main.py train --data dataset/OMNI_COCO/after --model yolo26m.pt --epochs 50 --project output/train --name omni-coco-after-yolo26m
-```
-
-Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 目前会在训练启动前明确提示“待适配”，不会被错误地当作 Ultralytics 模型运行。
-
 使用默认 YOLO11n：
 
 ```bash
-python cli/main.py train --data dataset/OMNI_COCO/before --model yolov26m.pt --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/smoke --name omni-coco-before-yolov26m
+python cli/main.py train --data dataset/OMNI_COCO/before --model yolo11n.pt --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/smoke --name omni-coco-before-yolo11n
 ```
 
 使用同系列更大模型：
@@ -123,6 +114,36 @@ python cli/main.py train --data dataset/OMNI_COCO/before --model yolov26m.pt --e
 ```bash
 python cli/main.py train --data dataset/OMNI_COCO/before --model weights/yolo11s.pt --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/train --name omni-coco-before-yolo11s
 ```
+
+使用 YOLOv8m：
+
+```bash
+python cli/main.py train \
+  --data dataset/OMNI_COCO/after \
+  --model yolov8m.pt \
+  --epochs 50 \
+  --imgsz 1024 \
+  --batch -1 \
+  --device 0 \
+  --project output/train \
+  --name omni-coco-after-yolov8m
+```
+
+使用 YOLO26m（需要当前安装的 Ultralytics 版本提供该模型）：
+
+```bash
+python cli/main.py train \
+  --data dataset/OMNI_COCO/after \
+  --model yolo26m.pt \
+  --epochs 50 \
+  --imgsz 1024 \
+  --batch -1 \
+  --device 0 \
+  --project output/train \
+  --name omni-coco-after-yolo26m
+```
+
+Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 目前会在训练启动前明确提示“待适配”，不会被错误地当作 Ultralytics 模型运行。
 
 使用 RT-DETR（需要当前 Ultralytics 版本提供对应权重）：
 
