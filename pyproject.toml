@@ -13,7 +13,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-train = ["ultralytics>=8.3.0"]
+train = ["ultralytics>=8.3.0", "pyyaml>=6.0", "torch>=2.1", "torchvision>=0.16"]
+external = ["transformers>=4.45", "pyyaml>=6.0", "rfdetr"]
 dev = ["pytest"]
 
 [tool.setuptools]
@@ -21,3 +22,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -12,7 +12,7 @@ if os.name == "nt":
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .model_catalog import require_trainable_model
+from .model_catalog import find_model_spec, require_trainable_model
 
 
 def _require_ultralytics() -> Any:
@@ -35,8 +35,17 @@ def train_yolo_detection(
     weights: Path | None = None,
     model_name: str = "yolo11n.pt",
 ) -> Path:
+    spec = require_trainable_model(model_name)
+    if spec.backend == "torchvision":
+        from .torchvision_adapter import train_torchvision_detection
+        return train_torchvision_detection(data_yaml, spec.name, epochs, imgsz, batch, device, project, name, weights)
+    if spec.backend in {"transformers", "rfdetr"}:
+        from .external_adapter import train_external_detection
+        return train_external_detection(
+            data_yaml=data_yaml, model_name=spec.name, weights=weights, epochs=epochs,
+            imgsz=imgsz, batch=batch, device=device, project=project, name=name,
+        )
     YOLO = _require_ultralytics()
-    require_trainable_model(model_name)
     model = YOLO(str(weights) if weights is not None else model_name)
     project_path = Path(project).resolve()
     kwargs: dict[str, Any] = {
@@ -54,7 +63,19 @@ def train_yolo_detection(
     return Path(result.save_dir) / "weights" / "best.pt"
 
 
-def validate_yolo_detection(weights: Path, data_yaml: Path, project: str = "output/val") -> Path:
+def validate_yolo_detection(weights: Path, data_yaml: Path, project: str = "output/val") -> Any:
+    metadata = _read_checkpoint_metadata(weights)
+    spec = require_trainable_model(metadata.get("model_name", weights.name))
+    if spec.backend == "torchvision":
+        from .torchvision_adapter import validate_torchvision_detection
+        return validate_torchvision_detection(weights, data_yaml)
+    if spec.backend in {"transformers", "rfdetr"}:
+        from .external_adapter import validate_external_detection
+        metrics = validate_external_detection(weights, data_yaml, spec.name)
+        output = Path(project) / "tooth-detect"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        return output
     YOLO = _require_ultralytics()
     model = YOLO(str(weights))
     result = model.val(data=str(data_yaml), project=project, name="tooth-detect")
@@ -132,8 +153,31 @@ def _detection_records(result: dict[str, Any]) -> list[dict[str, Any]]:
 def predict_image(
     weights: Path, image_path: Path, conf: float = 0.25, device: str | None = None
 ) -> dict[str, Any]:
+    metadata = _read_checkpoint_metadata(weights)
+    spec = find_model_spec(metadata.get("model_name", weights.name))
+    if spec is not None and spec.backend == "torchvision":
+        from .torchvision_adapter import predict_torchvision
+        return predict_torchvision(weights, image_path, conf=conf, device=device)
+    if spec is not None and spec.backend in {"transformers", "rfdetr"}:
+        from .external_adapter import predict_external
+        return predict_external(weights, image_path, spec.name, conf=conf, device=device)
     YOLO = _require_ultralytics()
     return _predict_image_with_model(YOLO(str(weights)), image_path, conf=conf, device=device)
+
+
+def _read_checkpoint_metadata(weights: Path) -> dict[str, Any]:
+    metadata_path = weights / "model_meta.json" if weights.is_dir() else None
+    if metadata_path is not None and metadata_path.is_file():
+        try:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+    try:
+        import torch
+        checkpoint = torch.load(weights, map_location="cpu", weights_only=False)
+        return checkpoint if isinstance(checkpoint, dict) else {}
+    except Exception:
+        return {}
 
 
 def save_prediction(

@@ -22,10 +22,10 @@ MODEL_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec("yolov8m.pt", ("yolov8m", "yolov8m.pt"), "YOLO", "ultralytics", "ready", "Ultralytics model."),
     ModelSpec("yolo26m.pt", ("yolo26m", "yolo26m.pt"), "YOLO", "ultralytics", "ready", "Ultralytics model; requires a recent Ultralytics release."),
     ModelSpec("rtdetr-l.pt", ("rtdetr-l", "rtdetr_l", "rtdetr-l.pt"), "RT-DETR", "ultralytics", "ready", "Existing RT-DETR baseline."),
-    ModelSpec("fasterrcnn_resnet50_fpn", ("fasterrcnn", "faster-rcnn", "faster r-cnn", "fasterrcnn_resnet50_fpn"), "Faster R-CNN", "torchvision", "adapter-needed", "Requires a torchvision dataset, training and evaluation adapter."),
-    ModelSpec("retinanet_resnet50_fpn", ("retinanet", "retinanet_resnet50_fpn"), "RetinaNet", "torchvision", "adapter-needed", "Requires a torchvision dataset, training and evaluation adapter."),
-    ModelSpec("rtdetrv2-l", ("rtdetrv2-l", "rt-detrv2-l", "rtdetrv2_l"), "RT-DETRv2", "external", "adapter-needed", "Not exposed by the current Ultralytics backend."),
-    ModelSpec("rf-detr-m", ("rf-detr-m", "rf_detr_m", "rfdetr-m"), "RF-DETR", "external", "adapter-needed", "Requires the RF-DETR package and its native adapter."),
+    ModelSpec("fasterrcnn_resnet50_fpn", ("fasterrcnn", "faster-rcnn", "faster r-cnn", "fasterrcnn_resnet50_fpn"), "Faster R-CNN", "torchvision", "ready", "Native torchvision detection adapter."),
+    ModelSpec("retinanet_resnet50_fpn", ("retinanet", "retinanet_resnet50_fpn"), "RetinaNet", "torchvision", "ready", "Native torchvision detection adapter."),
+    ModelSpec("rtdetrv2-l", ("rtdetrv2-l", "rt-detrv2-l", "rtdetrv2_l"), "RT-DETRv2", "transformers", "ready", "Native Transformers adapter; requires the RT-DETRv2 checkpoint/package."),
+    ModelSpec("rf-detr-m", ("rf-detr-m", "rf_detr_m", "rfdetr-m"), "RF-DETR", "rfdetr", "ready", "Native RF-DETR adapter; requires the rfdetr package."),
 )
 
 

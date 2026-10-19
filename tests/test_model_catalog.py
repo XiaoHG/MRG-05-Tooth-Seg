@@ -9,11 +9,11 @@ def test_model_catalog_resolves_supported_aliases():
     assert require_trainable_model("rtdetr-l.pt").backend == "ultralytics"
 
 
-def test_model_catalog_rejects_models_without_current_adapter():
-    with pytest.raises(ValueError, match="adapter-needed"):
-        require_trainable_model("Faster R-CNN")
-    with pytest.raises(ValueError, match="RF-DETR"):
-        require_trainable_model("rf-detr-m")
+def test_model_catalog_resolves_native_adapters():
+    assert require_trainable_model("Faster R-CNN").backend == "torchvision"
+    assert require_trainable_model("RetinaNet").backend == "torchvision"
+    assert require_trainable_model("RT-DETRv2-L").backend == "transformers"
+    assert require_trainable_model("rf-detr-m").backend == "rfdetr"
 
 
 def test_custom_ultralytics_model_names_remain_allowed():

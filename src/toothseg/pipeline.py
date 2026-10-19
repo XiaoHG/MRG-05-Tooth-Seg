@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .data import (
     export_yolo_detection_to_label_studio,
@@ -81,7 +82,7 @@ def train(
     )
 
 
-def validate(weights: Path, data_yaml: Path) -> Path:
+def validate(weights: Path, data_yaml: Path) -> Any:
     return validate_yolo_detection(weights, data_yaml)
 
 

@@ -2,7 +2,7 @@
 
 `train.py` 是 Kaggle 训练入口。它会从 GitHub 拉取指定版本的项目代码，安装训练依赖，然后调用项目的 `cli/main.py train`。
 
-当前项目是 YOLO11 单类别 `tooth` 检测，不是像素级分割，也不输出 FDI 牙位或临床分级结果。
+当前项目是单类别 `tooth` 目标检测，不是像素级分割，也不输出 FDI 牙位或临床分级结果。Kaggle 启动器支持 Ultralytics、torchvision、Transformers 和 RF-DETR 原生后端。
 
 ## 数据集结构
 
@@ -114,6 +114,89 @@ before/
   --name omni-coco-before-yolo26m
 ```
 
+## 新增模型
+
+`train.py` 会根据 `--model` 自动安装所需后端：Faster R-CNN 和 RetinaNet 使用 Kaggle 已安装/项目 `.[train]` 中的 torchvision；RT-DETRv2-L 和 RF-DETR-M 会额外安装 `.[external]`（Transformers、RF-DETR 和 YAML 依赖）。Kaggle Notebook 必须开启 Internet，RT-DETRv2-L 需要从 Hugging Face 下载模型，RF-DETR-M 建议提供官方预训练权重。
+
+### Faster R-CNN 冒烟与正式训练
+
+```python
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after-v4/before \
+  --dataset-mode prepared \
+  --model fasterrcnn_resnet50_fpn \
+  --epochs 1 --imgsz 1024 --batch 1 --device 0 \
+  --name smoke-fasterrcnn
+
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after-v4/before \
+  --dataset-mode prepared \
+  --model fasterrcnn_resnet50_fpn \
+  --epochs 50 --imgsz 1024 --batch 2 --device 0 \
+  --name omni-coco-before-fasterrcnn
+```
+
+### RetinaNet 冒烟与正式训练
+
+将上面命令中的模型和名称替换为：
+
+```text
+--model retinanet_resnet50_fpn --name smoke-retinanet
+--model retinanet_resnet50_fpn --name omni-coco-before-retinanet
+```
+
+冒烟测试使用 `--epochs 1 --batch 1`，正式训练使用 `--epochs 50 --batch 2`。
+
+### RT-DETRv2-L 冒烟与正式训练
+
+RT-DETRv2-L 通过 Transformers 原生接口训练。首次运行会下载 Hugging Face 权重；如使用本地或 Kaggle Dataset 中的模型目录，将其传给 `--weights`：
+
+```python
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after-v4/before \
+  --dataset-mode prepared \
+  --model rtdetrv2-l --epochs 1 --imgsz 1024 --batch 1 --device 0 \
+  --name smoke-rtdetrv2l
+
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after-v4/before \
+  --dataset-mode prepared \
+  --model rtdetrv2-l --epochs 50 --imgsz 1024 --batch 1 --device 0 \
+  --name omni-coco-before-rtdetrv2l
+```
+
+### RF-DETR-M 冒烟与正式训练
+
+RF-DETR-M 会在实验输出目录复制出其所需的 `train/images`、`train/labels`、`valid/images`、`valid/labels` 和 `data.yaml`，不会修改 Kaggle 输入数据。建议先将官方 `rf-detr-medium.pth` 上传为 Kaggle Dataset，再通过 `--weights` 传入：
+
+```python
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after-v4/before \
+  --dataset-mode prepared \
+  --model rf-detr-m --epochs 1 --imgsz 1024 --batch 1 --device 0 \
+  --weights /kaggle/input/rf-detr-weights/rf-detr-medium.pth \
+  --name smoke-rfdetrm
+
+!python /kaggle/working/train.py \
+  --repo-url https://github.com/XiaoHG/MRG-05-Tooth-Seg.git \
+  --repo-ref main \
+  --dataset /kaggle/input/datasets/hgxiao/omni-coco-before-after-v4/before \
+  --dataset-mode prepared \
+  --model rf-detr-m --epochs 50 --imgsz 1024 --batch 1 --device 0 \
+  --weights /kaggle/input/rf-detr-weights/rf-detr-medium.pth \
+  --name omni-coco-before-rfdetrm
+```
+
 运行日志中应看到训练数据位于类似以下的运行时视图：
 
 ```text
@@ -130,7 +213,7 @@ before/
 | `--repo-ref` | branch、tag 或 commit；正式实验建议使用 commit |
 | `--dataset` | Kaggle Dataset 中传入的实际数据根目录 |
 | `--dataset-mode prepared` | 使用已有 train/val 划分，不重新划分数据 |
-| `--model` | Ultralytics 模型名或配置，例如 `yolo11n.pt`、`yolo11s.pt`、`yolov8m.pt`、`yolo26m.pt`、`rtdetr-l.pt` |
+| `--model` | 模型名，例如 `yolo11n.pt`、`yolov8m.pt`、`yolo26m.pt`、`rtdetr-l.pt`、`fasterrcnn_resnet50_fpn`、`retinanet_resnet50_fpn`、`rtdetrv2-l`、`rf-detr-m` |
 | `--epochs` | 训练轮数 |
 | `--imgsz` | 输入尺寸；显存不足时可改为 640 |
 | `--batch` | `-1` 自动选择，显存不足时可改为 1 或 2 |
@@ -160,8 +243,9 @@ before/
 
 ## 注意事项
 
-- Kaggle Notebook 需要开启 Internet，脚本要从 GitHub clone 项目并安装 `ultralytics`。
+- Kaggle Notebook 需要开启 Internet，脚本要从 GitHub clone 项目并按模型安装对应训练依赖。
 - `/kaggle/input` 是只读目录，训练输出写入 `/kaggle/working`。
 - 当前 `test` 图像配有 `labels/test`，应在模型和参数确定后作为独立最终评估集；不要在调参阶段反复使用 test 指标。
 - `best.pt` 用于初始化新的训练实验；中断恢复应使用 Ultralytics 的 `last.pt` 恢复机制，不能混淆两者语义。
-- 当前启动器的 `--model` 适用于 Ultralytics 支持的 YOLO/RT-DETR 模型；Faster R-CNN、标准 DETR 和 Mask R-CNN 需要独立训练适配器，不能直接传入 `--model`。
+- RT-DETRv2-L 和 RF-DETR-M 依赖原生包及匹配权重；首次运行应先执行 1 epoch 冒烟测试，再开始正式训练。
+- `--weights` 对 RF-DETR-M 应指向官方 `.pth` 权重；RT-DETRv2-L 可指向 Hugging Face 模型目录或权重来源。

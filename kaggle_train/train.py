@@ -35,8 +35,12 @@ def clone_repository(repo_url: str, repo_ref: str, repo_dir: Path) -> None:
         run(["git", "checkout", repo_ref], cwd=repo_dir)
 
 
-def install_repository(repo_dir: Path) -> None:
-    run([sys.executable, "-m", "pip", "install", "-q", "-e", ".[train]"], cwd=repo_dir)
+def install_repository(repo_dir: Path, model: str) -> None:
+    key = model.lower().replace("-", "").replace("_", "")
+    extras = "train"
+    if any(name in key for name in ("rtdetrv2", "rfdetr")):
+        extras = "train,external"
+    run([sys.executable, "-m", "pip", "install", "-q", "-e", f".[{extras}]"], cwd=repo_dir)
 
 
 def is_prepared_dataset(dataset_dir: Path) -> bool:
@@ -153,7 +157,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-dir", type=Path, default=DEFAULT_REPO_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--weights", type=Path, default=None)
-    parser.add_argument("--model", default="yolo11n.pt", help="Ultralytics model name or checkpoint.")
+    parser.add_argument(
+        "--model",
+        default="yolo11n.pt",
+        help=(
+            "Model name or checkpoint: Ultralytics YOLO/RT-DETR, "
+            "fasterrcnn_resnet50_fpn, retinanet_resnet50_fpn, rtdetrv2-l, or rf-detr-m."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--imgsz", type=int, default=1024)
     parser.add_argument("--batch", type=int, default=-1)
@@ -174,7 +185,7 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     clone_repository(args.repo_url, args.repo_ref, args.repo_dir)
-    install_repository(args.repo_dir)
+    install_repository(args.repo_dir, args.model)
 
     located = locate_prepared_dataset(args.dataset)
     prepared = located is not None
