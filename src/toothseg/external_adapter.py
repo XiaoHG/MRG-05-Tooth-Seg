@@ -198,39 +198,42 @@ def _write_run_metadata(output: Path, model_name: str, data_yaml: Path, values: 
 
 def _evaluate_rtdetrv2(model, processor, dataset, device) -> dict[str, float]:
     import torch
+    was_training = model.training
     model.eval(); tp = fp = fn = 0; matched_ious = []
-    with torch.no_grad():
-        for image, annotations, _ in (dataset[index] for index in range(len(dataset))):
-            encoded = processor(images=image, return_tensors="pt")
-            inputs = {key: value.to(device) for key, value in encoded.items()}
-            outputs = model(**inputs)
-            prediction = processor.post_process_object_detection(
-                outputs, threshold=0.25, target_sizes=[(image.height, image.width)]
-            )[0]
-            pred_boxes = prediction["boxes"].detach().cpu()
-            target_boxes = torch.tensor(
-                [[x, y, x + w, y + h] for x, y, w, h in (item["bbox"] for item in annotations["annotations"])],
-                dtype=torch.float32,
-            )
-            used = set()
-            for box in pred_boxes:
-                if len(target_boxes) == 0:
-                    fp += 1; continue
-                overlaps = _box_iou(box, target_boxes); value, index = overlaps.max(0)
-                if float(value) >= 0.5 and int(index) not in used:
-                    tp += 1; used.add(int(index)); matched_ious.append(float(value))
-                else:
-                    fp += 1
-            fn += len(target_boxes) - len(used)
-    model.train()
-    precision = tp / max(1, tp + fp); recall = tp / max(1, tp + fn)
-    mean_iou = sum(matched_ious) / len(matched_ious) if matched_ious else 0.0
-    return {
-        "metrics/precision(B)": precision,
-        "metrics/recall(B)": recall,
-        "metrics/mAP50(B)": precision * recall,
-        "metrics/mAP50-95(B)": mean_iou * precision * recall,
-    }
+    try:
+        with torch.no_grad():
+            for image, annotations, _ in (dataset[index] for index in range(len(dataset))):
+                encoded = processor(images=image, return_tensors="pt")
+                inputs = {key: value.to(device) for key, value in encoded.items()}
+                outputs = model(**inputs)
+                prediction = processor.post_process_object_detection(
+                    outputs, threshold=0.25, target_sizes=[(image.height, image.width)]
+                )[0]
+                pred_boxes = prediction["boxes"].detach().cpu()
+                target_boxes = torch.tensor(
+                    [[x, y, x + w, y + h] for x, y, w, h in (item["bbox"] for item in annotations["annotations"])],
+                    dtype=torch.float32,
+                )
+                used = set()
+                for box in pred_boxes:
+                    if len(target_boxes) == 0:
+                        fp += 1; continue
+                    overlaps = _box_iou(box, target_boxes); value, index = overlaps.max(0)
+                    if float(value) >= 0.5 and int(index) not in used:
+                        tp += 1; used.add(int(index)); matched_ious.append(float(value))
+                    else:
+                        fp += 1
+                fn += len(target_boxes) - len(used)
+        precision = tp / max(1, tp + fp); recall = tp / max(1, tp + fn)
+        mean_iou = sum(matched_ious) / len(matched_ious) if matched_ious else 0.0
+        return {
+            "metrics/precision(B)": precision,
+            "metrics/recall(B)": recall,
+            "metrics/mAP50(B)": precision * recall,
+            "metrics/mAP50-95(B)": mean_iou * precision * recall,
+        }
+    finally:
+        model.train(was_training)
 
 
 def _box_iou(box, boxes):
