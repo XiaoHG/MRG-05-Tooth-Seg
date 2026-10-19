@@ -211,30 +211,34 @@ def evaluate_torchvision_detection(model, data_yaml: Path, split: str = "val", d
     dev = device or _device(None)
     dataset = YoloDetectionDataset(data_yaml, split, _torchvision()[3])
     print(f"val: Scanning {len(dataset)} images, device={dev}", flush=True)
+    was_training = model.training
     model.eval(); tp = fp = fn = 0; ious: list[float] = []
-    with torch.no_grad():
-        for image, target, _ in (dataset[i] for i in range(len(dataset))):
-            output = model([image.to(dev)])[0]
-            pred_boxes = output["boxes"].detach().cpu(); scores = output["scores"].detach().cpu()
-            keep = scores >= 0.25; pred_boxes = pred_boxes[keep]
-            matched: set[int] = set()
-            for box in pred_boxes:
-                if not len(target["boxes"]): fp += 1; continue
-                overlaps = _iou(box, target["boxes"]); value, index = overlaps.max(0)
-                if float(value) >= 0.5 and int(index) not in matched:
-                    tp += 1; matched.add(int(index)); ious.append(float(value))
-                else: fp += 1
-            fn += len(target["boxes"]) - len(matched)
-    if dataset.invalid_boxes:
-        print(f"WARNING: skipped {dataset.invalid_boxes} invalid clipped {split} boxes", flush=True)
-    precision = tp / max(1, tp + fp); recall = tp / max(1, tp + fn)
-    mean_iou = sum(ious) / len(ious) if ious else 0.0
-    return {
-        "metrics/precision(B)": precision,
-        "metrics/recall(B)": recall,
-        "metrics/mAP50(B)": precision * recall,
-        "metrics/mAP50-95(B)": mean_iou * precision * recall,
-    }
+    try:
+        with torch.no_grad():
+            for image, target, _ in (dataset[i] for i in range(len(dataset))):
+                output = model([image.to(dev)])[0]
+                pred_boxes = output["boxes"].detach().cpu(); scores = output["scores"].detach().cpu()
+                keep = scores >= 0.25; pred_boxes = pred_boxes[keep]
+                matched: set[int] = set()
+                for box in pred_boxes:
+                    if not len(target["boxes"]): fp += 1; continue
+                    overlaps = _iou(box, target["boxes"]); value, index = overlaps.max(0)
+                    if float(value) >= 0.5 and int(index) not in matched:
+                        tp += 1; matched.add(int(index)); ious.append(float(value))
+                    else: fp += 1
+                fn += len(target["boxes"]) - len(matched)
+        if dataset.invalid_boxes:
+            print(f"WARNING: skipped {dataset.invalid_boxes} invalid clipped {split} boxes", flush=True)
+        precision = tp / max(1, tp + fp); recall = tp / max(1, tp + fn)
+        mean_iou = sum(ious) / len(ious) if ious else 0.0
+        return {
+            "metrics/precision(B)": precision,
+            "metrics/recall(B)": recall,
+            "metrics/mAP50(B)": precision * recall,
+            "metrics/mAP50-95(B)": mean_iou * precision * recall,
+        }
+    finally:
+        model.train(was_training)
 
 
 def _write_args(save_dir: Path, values: dict[str, Any]) -> None:
