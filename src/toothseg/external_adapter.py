@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ def train_external_detection(*args: Any, model_name: str, **kwargs: Any) -> Path
         kwargs["device"] = f"cuda:{kwargs['device']}"
     output = Path(kwargs.pop("project", "output/train")) / kwargs.pop("name", "external-detection")
     output.mkdir(parents=True, exist_ok=True)
+    _write_run_metadata(output, model_name, data_yaml, kwargs)
     if "rtdetrv2" in model_name.lower().replace("-", "").replace("_", ""):
         return _train_rtdetrv2(data_yaml, output, weights=weights, **kwargs)
 
@@ -59,7 +61,8 @@ def train_external_detection(*args: Any, model_name: str, **kwargs: Any) -> Path
         # project-wide Ultralytics names (batch/imgsz/project/name) verbatim.
         if "rfdetr" in model_name.lower().replace("-", "").replace("_", ""):
             kwargs.pop("imgsz", None)
-            kwargs["batch_size"] = kwargs.pop("batch", 1)
+            requested_batch = int(kwargs.pop("batch", 1))
+            kwargs["batch_size"] = max(1, requested_batch)
             kwargs["output_dir"] = str(output)
             rf_data_yaml = _materialize_rfdetr_dataset(data_yaml, output)
             kwargs["dataset_dir"] = str(rf_data_yaml.parent)
@@ -138,12 +141,15 @@ def _train_rtdetrv2(data_yaml: Path, output: Path, weights: Path | None = None, 
     processor_id = str(weights) if weights else "PekingU/rtdetr_v2_r50vd"
     processor = AutoImageProcessor.from_pretrained(processor_id)
     dataset = _ExternalYoloDataset(data_yaml, "train")
+    val_dataset = _ExternalYoloDataset(data_yaml, "val")
     device = _torch_device(kwargs.get("device"))
     model.to(device).train()
     epochs = int(kwargs.get("epochs", 1))
     batch_size = max(1, int(kwargs.get("batch", 1)))
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=lambda batch: batch)
     optimizer = torch.optim.AdamW(model.parameters(), lr=kwargs.get("lr", 1e-4), weight_decay=1e-4)
+    rows = []
+    results_path = output / "results.csv"
     print(f"Transformers RT-DETRv2-L {torch.__version__} device={device}", flush=True)
     print(f"train: Scanning {data_yaml} ... {len(dataset)} images", flush=True)
     for epoch in range(1, epochs + 1):
@@ -165,11 +171,75 @@ def _train_rtdetrv2(data_yaml: Path, output: Path, weights: Path | None = None, 
             total += float(loss.detach().cpu())
             if batch_index == 1 or batch_index == len(loader):
                 print(f"      {epoch}/{epochs}      batch {batch_index}/{len(loader)}  loss={float(loss.detach().cpu()):.4f}", flush=True)
-        print(f"      {epoch}/{epochs}      loss={total / max(1, len(loader)):.4f}", flush=True)
+        train_loss = total / max(1, len(loader))
+        metrics = _evaluate_rtdetrv2(model, processor, val_dataset, device)
+        row = {"epoch": epoch, "train/loss": train_loss, **metrics}
+        rows.append(row)
+        with results_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(row))
+            writer.writeheader(); writer.writerows(rows)
+        print(
+            f"      {epoch}/{epochs}      loss={train_loss:.4f} "
+            f"precision={metrics['metrics/precision(B)']:.4f} "
+            f"recall={metrics['metrics/recall(B)']:.4f} "
+            f"mAP50={metrics['metrics/mAP50(B)']:.4f} "
+            f"mAP50-95={metrics['metrics/mAP50-95(B)']:.4f}", flush=True,
+        )
     model.save_pretrained(output); processor.save_pretrained(output)
     (output / "model_meta.json").write_text(json.dumps({"model_name": "rtdetrv2-l"}, indent=2), encoding="utf-8")
     print(f"Results saved to {output.resolve()}", flush=True)
     return output
+
+
+def _write_run_metadata(output: Path, model_name: str, data_yaml: Path, values: dict[str, Any]) -> None:
+    metadata = {"model": model_name, "data": str(data_yaml), "backend": "native", **values}
+    (output / "run_metadata.json").write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")
+
+
+def _evaluate_rtdetrv2(model, processor, dataset, device) -> dict[str, float]:
+    import torch
+    model.eval(); tp = fp = fn = 0; matched_ious = []
+    with torch.no_grad():
+        for image, annotations, _ in (dataset[index] for index in range(len(dataset))):
+            encoded = processor(images=image, return_tensors="pt")
+            inputs = {key: value.to(device) for key, value in encoded.items()}
+            outputs = model(**inputs)
+            prediction = processor.post_process_object_detection(
+                outputs, threshold=0.25, target_sizes=[(image.height, image.width)]
+            )[0]
+            pred_boxes = prediction["boxes"].detach().cpu()
+            target_boxes = torch.tensor(
+                [[x, y, x + w, y + h] for x, y, w, h in (item["bbox"] for item in annotations["annotations"])],
+                dtype=torch.float32,
+            )
+            used = set()
+            for box in pred_boxes:
+                if len(target_boxes) == 0:
+                    fp += 1; continue
+                overlaps = _box_iou(box, target_boxes); value, index = overlaps.max(0)
+                if float(value) >= 0.5 and int(index) not in used:
+                    tp += 1; used.add(int(index)); matched_ious.append(float(value))
+                else:
+                    fp += 1
+            fn += len(target_boxes) - len(used)
+    model.train()
+    precision = tp / max(1, tp + fp); recall = tp / max(1, tp + fn)
+    mean_iou = sum(matched_ious) / len(matched_ious) if matched_ious else 0.0
+    return {
+        "metrics/precision(B)": precision,
+        "metrics/recall(B)": recall,
+        "metrics/mAP50(B)": precision * recall,
+        "metrics/mAP50-95(B)": mean_iou * precision * recall,
+    }
+
+
+def _box_iou(box, boxes):
+    import torch
+    lt = torch.maximum(box[:2], boxes[:, :2]); rb = torch.minimum(box[2:], boxes[:, 2:])
+    wh = (rb - lt).clamp(min=0); inter = wh[:, 0] * wh[:, 1]
+    area = (box[2] - box[0]) * (box[3] - box[1])
+    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    return inter / (area + areas - inter).clamp(min=1e-7)
 
 
 class _ExternalYoloDataset:

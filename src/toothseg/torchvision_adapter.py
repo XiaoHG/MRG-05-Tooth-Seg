@@ -140,6 +140,11 @@ def train_torchvision_detection(
     print(f"Saving to {save_dir.resolve()}", flush=True)
     print("\n      Epoch    GPU_mem   loss       Precision  Recall     mAP50     mAP50-95", flush=True)
     rows = []
+    _write_args(save_dir, {
+        "model": model_name, "data": str(data_yaml), "epochs": epochs,
+        "imgsz": imgsz, "batch": batch, "device": str(dev),
+        "backend": "torchvision", "seed": None,
+    })
     for epoch in range(1, epochs + 1):
         total_loss = 0.0
         for batch_index, (images, targets, _) in enumerate(loader, start=1):
@@ -168,14 +173,14 @@ def train_torchvision_detection(
         mean_loss = total_loss / max(1, len(loader))
         print(
             f"      {epoch}/{epochs}      {str(dev):<8} {mean_loss:>8.4f} "
-            f"{metrics['Precision']:>10.4f} {metrics['Recall']:>8.4f} "
-            f"{metrics['mAP50']:>9.4f} {metrics['mAP50-95']:>10.4f}",
+            f"{metrics['metrics/precision(B)']:>10.4f} {metrics['metrics/recall(B)']:>8.4f} "
+            f"{metrics['metrics/mAP50(B)']:>9.4f} {metrics['metrics/mAP50-95(B)']:>10.4f}",
             flush=True,
         )
         rows.append({"epoch": epoch, "train/loss": mean_loss, **metrics})
         checkpoint = {"model_name": model_name, "state_dict": model.state_dict(), "classes": ["tooth"]}
         torch.save(checkpoint, save_dir / "last.pt")
-        if not rows[:-1] or metrics["mAP50-95"] >= max(r["mAP50-95"] for r in rows[:-1]):
+        if not rows[:-1] or metrics["metrics/mAP50-95(B)"] >= max(r["metrics/mAP50-95(B)"] for r in rows[:-1]):
             torch.save(checkpoint, save_dir / "best.pt")
             print(f"Saved best model to {save_dir / 'best.pt'}", flush=True)
     with (save_dir / "results.csv").open("w", newline="", encoding="utf-8") as handle:
@@ -224,7 +229,20 @@ def evaluate_torchvision_detection(model, data_yaml: Path, split: str = "val", d
         print(f"WARNING: skipped {dataset.invalid_boxes} invalid clipped {split} boxes", flush=True)
     precision = tp / max(1, tp + fp); recall = tp / max(1, tp + fn)
     mean_iou = sum(ious) / len(ious) if ious else 0.0
-    return {"Precision": precision, "Recall": recall, "mAP50": precision * recall, "mAP50-95": mean_iou * precision * recall}
+    return {
+        "metrics/precision(B)": precision,
+        "metrics/recall(B)": recall,
+        "metrics/mAP50(B)": precision * recall,
+        "metrics/mAP50-95(B)": mean_iou * precision * recall,
+    }
+
+
+def _write_args(save_dir: Path, values: dict[str, Any]) -> None:
+    try:
+        import yaml
+        (save_dir / "args.yaml").write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+    except ImportError:
+        (save_dir / "args.json").write_text(json.dumps(values, indent=2), encoding="utf-8")
 
 
 def _iou(box, boxes):

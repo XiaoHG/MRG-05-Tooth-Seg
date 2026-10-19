@@ -45,6 +45,8 @@ before/
 
 ## Kaggle Notebook 用法
 
+以下多行命令是 Jupyter/Kaggle 单元格语法，第一行必须带 `!python`，行尾使用反斜杠 `\`。不要直接粘贴到 Windows PowerShell；PowerShell 应改用反引号 `` ` `` 换行，或写成一行。
+
 建议直接从 GitHub 下载启动器，不需要把 `train.py` 上传到 Kaggle Dataset：
 
 ```python
@@ -249,3 +251,4 @@ RF-DETR-M 会在实验输出目录复制出其所需的 `train/images`、`train/
 - `best.pt` 用于初始化新的训练实验；中断恢复应使用 Ultralytics 的 `last.pt` 恢复机制，不能混淆两者语义。
 - RT-DETRv2-L 和 RF-DETR-M 依赖原生包及匹配权重；首次运行应先执行 1 epoch 冒烟测试，再开始正式训练。
 - `--weights` 对 RF-DETR-M 应指向官方 `.pth` 权重；RT-DETRv2-L 可指向 Hugging Face 模型目录或权重来源。
+- 四个新增模型会额外保存后端运行元信息；torchvision 和 RT-DETRv2-L 会生成统一字段的 `results.csv`，包括 `metrics/precision(B)`、`metrics/recall(B)`、`metrics/mAP50(B)` 和 `metrics/mAP50-95(B)`。RF-DETR-M 同时保留其原生 Lightning 日志和 `run_metadata.json`。
