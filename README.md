@@ -1,5 +1,20 @@
 # MRG-05-Tooth-Seg
 
+## 模型初始化与预训练权重
+
+当前四个新增检测模型的默认初始化方式并不一致：
+
+| 模型 | 默认初始化方式 | 说明 |
+| --- | --- | --- |
+| Faster R-CNN (`fasterrcnn_resnet50_fpn`) | 从头初始化 | torchvision 构造时使用 `weights=None` 和 `weights_backbone=None`，不会自动下载预训练权重。 |
+| RetinaNet (`retinanet_resnet50_fpn`) | 从头初始化 | torchvision 构造时使用 `weights=None` 和 `weights_backbone=None`，不会自动下载预训练权重。 |
+| RT-DETRv2-L (`rtdetrv2-l`) | 使用预训练参数 | 未传 `--weights` 时，默认从 Hugging Face 加载 `PekingU/rtdetr_v2_r50vd`，再在本项目数据上训练。 |
+| RF-DETR-M (`rf-detr-m`) | 默认从头初始化 | 未传 `--weights` 时，适配器传入 `pretrain_weights=None`。建议正式实验显式提供官方 `rf-detr-medium.pth`。 |
+
+如果训练命令显式传入 `--weights`，则会使用该权重初始化模型。对于 Faster R-CNN、RetinaNet 和 RF-DETR-M，这会把默认的从头初始化改为基于指定权重训练；对于 RT-DETRv2-L，则会从指定的本地权重目录或模型来源加载。这里的“预训练”仅表示模型参数初始化方式，不代表模型已经在本项目的牙齿数据上训练完成。
+
+上述行为对应的实现位于 `src/toothseg/torchvision_adapter.py` 和 `src/toothseg/external_adapter.py`。例如，现有 RF-DETR-M 冒烟实验的 `training_config.json` 中 `pretrain_weights` 为 `null`，说明该次实验没有使用外部预训练权重。
+
 面向口腔图像的单类别牙齿检测项目。当前主任务是使用 YOLO 格式边界框训练牙齿检测模型，输出检测框、可视化图像、检测 JSON 和单颗牙齿裁剪图。
 
 当前项目不是像素级牙齿分割系统，也不输出 FDI 牙位编号或氟斑牙临床分级结果。
@@ -10,7 +25,7 @@
 - 标签格式为 `class x_center y_center width height`，坐标归一化到 `[0, 1]`。
 - 当前训练入口基于 Ultralytics，支持通过 `--model` 选择已适配模型，例如 `yolo11n.pt`、`yolo11s.pt`、`yolov8m.pt`、`yolo26m.pt` 和 `rtdetr-l.pt`。
 - `--weights` 用于加载已有权重初始化训练；当同时提供 `--model` 和 `--weights` 时，已有权重优先。
-- Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 已登记为待适配模型，但尚未接入当前 CLI；它们需要独立的数据适配器、训练循环、权重加载和评估接口。Mask R-CNN 还需要真实实例分割掩码，不能用矩形框伪造掩码作为正式分割实验。
+- Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 已接入独立后端：前两者使用 torchvision 检测适配器，RT-DETRv2-L 使用 Transformers 原生模型接口，RF-DETR-M 使用 RF-DETR 原生包接口。四类模型均使用独立的数据读取、训练、权重和验证入口，不会被错误地当作 Ultralytics 模型运行。Mask R-CNN 还需要真实实例分割掩码，不能用矩形框伪造掩码作为正式分割实验。
 - Kaggle 启动器支持当前 OMNI 数据目录，并会在工作目录生成标准 YOLO 数据视图。
 
 ## 数据集
@@ -77,6 +92,13 @@ pip install -e .
 pip install -e ".[train]"
 ```
 
+RT-DETRv2-L 的 Transformers 后端和 RF-DETR-M 的原生后端：
+
+```bash
+pip install -e ".[external]"
+pip install rfdetr
+```
+
 开发测试依赖：
 
 ```bash
@@ -118,6 +140,8 @@ python cli/main.py train --data dataset/OMNI_COCO/before --model weights/yolo11s
 使用 YOLOv8m：
 
 ```bash
+python cli/main.py train --data dataset/OMNI_COCO/after --model yolov8m.pt --epochs 1 --imgsz 1024 --batch -1 --device 0 --project output/smoke --name omni-coco-after-yolov8m
+
 python cli/main.py train \
   --data dataset/OMNI_COCO/after \
   --model yolov8m.pt \
@@ -143,7 +167,51 @@ python cli/main.py train \
   --name omni-coco-after-yolo26m
 ```
 
-Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 目前会在训练启动前明确提示“待适配”，不会被错误地当作 Ultralytics 模型运行。
+### Faster R-CNN / RetinaNet 冒烟测试
+
+Faster R-CNN 和 RetinaNet 使用 torchvision 后端。安装 `.[train]` 后，先用 1 个 epoch 验证数据读取、模型构造、反向传播、权重保存和验证流程：
+
+```bash
+python cli/main.py train --data dataset/OMNI_COCO/after --model fasterrcnn_resnet50_fpn --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/smoke --name omni-coco-after-fasterrcnn-smoke
+
+python cli/main.py train --data dataset/OMNI_COCO/after --model retinanet_resnet50_fpn --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/smoke --name omni-coco-after-retinanet-smoke
+```
+
+冒烟测试通过后执行完整训练：
+
+```bash
+python cli/main.py train --data dataset/OMNI_COCO/after --model fasterrcnn_resnet50_fpn --epochs 50 --imgsz 1024 --batch 2 --device 0 --project output/train --name omni-coco-after-fasterrcnn
+
+python cli/main.py train --data dataset/OMNI_COCO/after --model retinanet_resnet50_fpn --epochs 50 --imgsz 1024 --batch 2 --device 0 --project output/train --name omni-coco-after-retinanet
+```
+
+两类 torchvision 模型的权重为项目统一 checkpoint，包含模型名称和 `state_dict`；验证时使用同一命令入口：
+
+```bash
+python cli/main.py val --weights output/train/omni-coco-after-fasterrcnn/best.pt --data dataset/OMNI_COCO/after
+```
+
+### RT-DETRv2-L / RF-DETR-M 冒烟测试与训练
+
+RT-DETRv2-L 和 RF-DETR-M 通过各自原生包适配。RT-DETRv2-L 需要安装 `transformers` 并提供可用的 RT-DETRv2 checkpoint；RF-DETR-M 需要安装 `rfdetr`。由于两个原生包的模型构造和输出格式并不相同，CLI 会调用其原生 `train`、`validate/val` 和 `predict` 接口，不会将其权重转交给 Ultralytics。
+
+RF-DETR-M 训练启动时会在实验输出目录生成独立的数据适配视图（`train/images`、`train/labels`、`valid/images`、`valid/labels` 和 `data.yaml`），用于满足 RF-DETR 的数据格式检测；该过程只复制数据，不修改原始 `dataset/` 内容。
+
+先执行 1 个 epoch 冒烟测试，确认原生依赖、权重和数据接口可用：
+
+```bash
+python cli/main.py train --data dataset/OMNI_COCO/after --model rtdetrv2-l --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/smoke --name omni-coco-after-rtdetrv2l-smoke
+
+python cli/main.py train --data dataset/OMNI_COCO/after --model rf-detr-m --epochs 1 --imgsz 1024 --batch 1 --device 0 --project output/smoke --name omni-coco-after-rfdetrm-smoke
+```
+
+冒烟测试通过后执行完整训练：
+
+```bash
+python cli/main.py train --data dataset/OMNI_COCO/after --model rtdetrv2-l --epochs 50 --imgsz 1024 --batch 2 --device 0 --project output/train --name omni-coco-after-rtdetrv2l
+
+python cli/main.py train --data dataset/OMNI_COCO/after --model rf-detr-m --epochs 50 --imgsz 1024 --batch 2 --device 0 --project output/train --name omni-coco-after-rfdetrm
+```
 
 使用 RT-DETR（需要当前 Ultralytics 版本提供对应权重）：
 
@@ -227,7 +295,7 @@ python cli/main.py predict-dir \
   --conf 0.25 \
   --device 0
 
-python cli/main.py predict-visualize --weights output/train/rtdetr-l/omni-coco-rtdetr-l-after-v4-result/toothseg-output/train/omni-coco-rtdetr-l-after-v4/weights/best.pt --image-dir dataset/OMNI_COCO/after/images/test --output output/predict/rtdetr-l/after --conf 0.25 --device 0
+python cli/main.py predict-visualize --weights output/train/yolo11n/omni-coco-after-result/toothseg-output/train/omni-coco-after-v2/weights/best.pt --image-dir F:/tooth_dataset/Oral/Images_Data_Set/post-processing/images --output F:/tooth_dataset/Oral/Images_Data_Set/post-processing/predict --conf 0.25 --device 0
 ```
 
 聚合可视化推理：
@@ -342,8 +410,8 @@ python -m pytest -q
 
 ## 当前限制与后续计划
 
-- 当前核心实现仍是 Ultralytics 训练/推理流程，已适配 YOLO11、YOLOv8m、YOLO26m 和 RT-DETR-L。
-- Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M 已登记在 `python cli/main.py models` 的模型目录中，但仍需要独立的数据适配器、训练循环、权重加载和评估接口，当前 CLI 会在启动前明确拒绝这些模型。
+- 当前项目同时支持 Ultralytics、torchvision、Transformers 和 RF-DETR 原生后端；已适配 YOLO11、YOLOv8m、YOLO26m、RT-DETR-L、Faster R-CNN、RetinaNet、RT-DETRv2-L 和 RF-DETR-M。
+- 四类非 Ultralytics 模型需要匹配的可选依赖和原生权重。缺少依赖时，CLI 会给出明确安装提示，不会静默回退到其他模型架构。
 - Mask R-CNN 需要真实实例分割掩码；当前矩形框标签不足以支持正式分割实验。
 - `test` 标签可用于最终评估，但不能在模型选择阶段反复使用。
 - 伪标签、无标签图像和推理可视化不能替代固定人工真值验证集。
