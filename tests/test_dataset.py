@@ -8,8 +8,8 @@ from toothseg.data import prepare_raw_yolo_dataset, validate_yolo_detection_data
 
 def test_dataset_is_valid():
     summary = validate_yolo_detection_dataset(Path("dataset"))
-    assert summary.images == 2338
-    assert summary.labels == 2338
+    assert summary.images == 2998
+    assert summary.labels == 2998
     assert summary.classes == ["tooth"]
     assert summary.box_count > 0
 

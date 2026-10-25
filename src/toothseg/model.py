@@ -34,6 +34,7 @@ def train_yolo_detection(
     name: str = "tooth-detect-v5",
     weights: Path | None = None,
     model_name: str = "yolo11n.pt",
+    lr: float | None = None,
 ) -> Path:
     spec = require_trainable_model(model_name)
     if spec.backend == "torchvision":
@@ -41,9 +42,16 @@ def train_yolo_detection(
         return train_torchvision_detection(data_yaml, spec.name, epochs, imgsz, batch, device, project, name, weights)
     if spec.backend in {"transformers", "rfdetr"}:
         from .external_adapter import train_external_detection
+        external_kwargs = {
+            "data_yaml": data_yaml, "model_name": spec.name, "weights": weights, "epochs": epochs,
+            "imgsz": imgsz, "batch": batch, "device": device, "project": project, "name": name,
+        }
+        # RF-DETR validates its Pydantic config strictly and rejects an
+        # explicit ``lr=None``. Omit optional values unless supplied.
+        if lr is not None:
+            external_kwargs["lr"] = lr
         return train_external_detection(
-            data_yaml=data_yaml, model_name=spec.name, weights=weights, epochs=epochs,
-            imgsz=imgsz, batch=batch, device=device, project=project, name=name,
+            **external_kwargs,
         )
     YOLO = _require_ultralytics()
     model = YOLO(str(weights) if weights is not None else model_name)

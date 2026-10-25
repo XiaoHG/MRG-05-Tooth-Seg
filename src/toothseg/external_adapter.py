@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import csv
+import importlib
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +21,37 @@ def _missing(name: str, packages: str) -> RuntimeError:
     return RuntimeError(f"{name} requires its native package ({packages}). Install it before using this model.")
 
 
+def _transformers_symbols(*names: str) -> tuple[Any, ...]:
+    """Load Transformers symbols while tolerating a broken optional torchaudio.
+
+    Transformers imports ``torchaudio`` while resolving image processors. A
+    mismatched torchaudio wheel can fail at DLL load time even though RT-DETRv2
+    does not use audio. Mark that optional backend unavailable for this process
+    and let the vision-only import continue.
+    """
+    try:
+        transformers = importlib.import_module("transformers")
+    except Exception as exc:
+        raise _missing("RT-DETRv2-L", "transformers") from exc
+    try:
+        importlib.import_module("torchaudio")
+    except Exception:
+        try:
+            import_utils = importlib.import_module("transformers.utils.import_utils")
+            if hasattr(import_utils, "_torchaudio_available"):
+                import_utils._torchaudio_available = False
+        except Exception:
+            pass
+    try:
+        return tuple(getattr(transformers, name) for name in names)
+    except Exception as exc:
+        raise _missing("RT-DETRv2-L", "transformers") from exc
+
+
 def build_external_model(model_name: str, weights: Path | None = None, **kwargs: Any):
     key = model_name.lower().replace("-", "").replace("_", "")
     if "rtdetrv2" in key:
-        try:
-            from transformers import AutoModelForObjectDetection
-        except Exception as exc:  # pragma: no cover
-            raise _missing("RT-DETRv2-L", "transformers") from exc
+        (AutoModelForObjectDetection,) = _transformers_symbols("AutoModelForObjectDetection")
         model_id = str(weights) if weights else kwargs.get("model_id", "PekingU/rtdetr_v2_r50vd")
         return AutoModelForObjectDetection.from_pretrained(model_id)
     if "rfdetr" in key:
@@ -60,6 +85,8 @@ def train_external_detection(*args: Any, model_name: str, **kwargs: Any) -> Path
         # RF-DETR has its own Pydantic TrainConfig. Do not forward the
         # project-wide Ultralytics names (batch/imgsz/project/name) verbatim.
         if "rfdetr" in model_name.lower().replace("-", "").replace("_", ""):
+            if kwargs.get("lr") is None:
+                kwargs.pop("lr", None)
             kwargs.pop("imgsz", None)
             requested_batch = int(kwargs.pop("batch", 1))
             kwargs["batch_size"] = max(1, requested_batch)
@@ -132,11 +159,8 @@ def _train_rtdetrv2(data_yaml: Path, output: Path, weights: Path | None = None, 
     ``train(data=...)`` method, so the YOLO labels are converted to COCO-style
     annotations and passed through the model's image processor explicitly.
     """
-    try:
-        import torch
-        from transformers import AutoImageProcessor
-    except Exception as exc:  # pragma: no cover
-        raise _missing("RT-DETRv2-L", "transformers") from exc
+    import torch
+    (AutoImageProcessor,) = _transformers_symbols("AutoImageProcessor")
     model = build_external_model("rtdetrv2-l", weights)
     processor_id = str(weights) if weights else "PekingU/rtdetr_v2_r50vd"
     processor = AutoImageProcessor.from_pretrained(processor_id)
@@ -147,7 +171,22 @@ def _train_rtdetrv2(data_yaml: Path, output: Path, weights: Path | None = None, 
     epochs = int(kwargs.get("epochs", 1))
     batch_size = max(1, int(kwargs.get("batch", 1)))
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=lambda batch: batch)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=kwargs.get("lr", 1e-4), weight_decay=1e-4)
+    # DETR fine-tuning is sensitive to a large step size: 1e-4 can destroy the
+    # pretrained queries after a few epochs while the scalar loss still falls.
+    learning_rate = float(kwargs.get("lr") or 1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    total_steps = max(1, epochs * len(loader))
+    warmup_steps = min(500, max(50, total_steps // 20))
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[
+            torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps),
+            torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, total_steps - warmup_steps), eta_min=learning_rate * 0.1),
+        ],
+        milestones=[warmup_steps],
+    )
+    best_metric = -1.0
+    best_state_path = output / "best_state.pt"
     rows = []
     results_path = output / "results.csv"
     print(f"Transformers RT-DETRv2-L {torch.__version__} device={device}", flush=True)
@@ -167,12 +206,21 @@ def _train_rtdetrv2(data_yaml: Path, output: Path, weights: Path | None = None, 
             if not torch.isfinite(loss):
                 print(f"WARNING: non-finite loss at epoch {epoch}, batch {batch_index}; skipped", flush=True)
                 continue
-            loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); optimizer.step()
+            loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            if not torch.isfinite(grad_norm):
+                optimizer.zero_grad(set_to_none=True)
+                print(f"WARNING: non-finite gradients at epoch {epoch}, batch {batch_index}; skipped", flush=True)
+                continue
+            optimizer.step(); scheduler.step()
             total += float(loss.detach().cpu())
             if batch_index == 1 or batch_index == len(loader):
                 print(f"      {epoch}/{epochs}      batch {batch_index}/{len(loader)}  loss={float(loss.detach().cpu()):.4f}", flush=True)
         train_loss = total / max(1, len(loader))
         metrics = _evaluate_rtdetrv2(model, processor, val_dataset, device)
+        if metrics["metrics/mAP50-95(B)"] > best_metric:
+            best_metric = metrics["metrics/mAP50-95(B)"]
+            torch.save(model.state_dict(), best_state_path)
         row = {"epoch": epoch, "train/loss": train_loss, **metrics}
         rows.append(row)
         with results_path.open("w", newline="", encoding="utf-8") as handle:
@@ -185,6 +233,9 @@ def _train_rtdetrv2(data_yaml: Path, output: Path, weights: Path | None = None, 
             f"mAP50={metrics['metrics/mAP50(B)']:.4f} "
             f"mAP50-95={metrics['metrics/mAP50-95(B)']:.4f}", flush=True,
         )
+    if best_state_path.is_file():
+        model.load_state_dict(torch.load(best_state_path, map_location=device, weights_only=True))
+        best_state_path.unlink()
     model.save_pretrained(output); processor.save_pretrained(output)
     (output / "model_meta.json").write_text(json.dumps({"model_name": "rtdetrv2-l"}, indent=2), encoding="utf-8")
     print(f"Results saved to {output.resolve()}", flush=True)
@@ -298,7 +349,7 @@ def validate_external_detection(weights: Path, data_yaml: Path, model_name: str,
 
 def _validate_rtdetrv2(weights: Path, data_yaml: Path, device: Any = None) -> dict[str, float]:
     import torch
-    from transformers import AutoImageProcessor
+    (AutoImageProcessor,) = _transformers_symbols("AutoImageProcessor")
     model = build_external_model("rtdetrv2-l", weights)
     processor = AutoImageProcessor.from_pretrained(str(weights))
     dataset = _ExternalYoloDataset(data_yaml, "val")
@@ -317,7 +368,7 @@ def predict_external(weights: Path, image_path: Path, model_name: str, **kwargs:
     if not hasattr(model, "predict"):
         try:
             import torch
-            from transformers import AutoImageProcessor
+            (AutoImageProcessor,) = _transformers_symbols("AutoImageProcessor")
         except Exception as exc:  # pragma: no cover
             raise _missing(model_name, "transformers") from exc
         image = Image.open(image_path).convert("RGB")

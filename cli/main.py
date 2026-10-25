@@ -69,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", default=None)
     p.add_argument("--project", default="output/train")
     p.add_argument("--name", default="tooth-detect-v5")
+    p.add_argument("--lr", type=float, default=None, help="Initial learning rate (RT-DETRv2 default: 1e-5).")
 
     p = sub.add_parser("val")
     p.add_argument("--weights", type=Path, required=True)
@@ -137,6 +138,7 @@ def main() -> None:
                 device=args.device,
                 project=args.project,
                 name=args.name,
+                lr=args.lr,
             )
         )
     elif args.cmd == "val":
