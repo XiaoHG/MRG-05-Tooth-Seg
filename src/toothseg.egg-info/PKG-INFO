@@ -7,5 +7,12 @@ Requires-Dist: numpy
 Requires-Dist: pillow
 Provides-Extra: train
 Requires-Dist: ultralytics>=8.3.0; extra == "train"
+Requires-Dist: pyyaml>=6.0; extra == "train"
+Requires-Dist: torch>=2.1; extra == "train"
+Requires-Dist: torchvision>=0.16; extra == "train"
+Provides-Extra: external
+Requires-Dist: transformers>=4.45; extra == "external"
+Requires-Dist: pyyaml>=6.0; extra == "external"
+Requires-Dist: rfdetr; extra == "external"
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"

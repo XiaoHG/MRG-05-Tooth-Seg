@@ -67,6 +67,7 @@ def train(
     name: str = "tooth-detect-v5",
     weights: Path | None = None,
     model_name: str = "yolo11n.pt",
+    lr: float | None = None,
 ) -> Path:
     return train_yolo_detection(
         data_yaml,
@@ -79,6 +80,7 @@ def train(
         device=device,
         project=project,
         name=name,
+        lr=lr,
     )
 
 
