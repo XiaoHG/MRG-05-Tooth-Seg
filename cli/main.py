@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
 from toothseg.data import materialize_yolo_data_yaml, validate_yolo_detection_dataset
 from toothseg.model_catalog import format_model_catalog
 from toothseg.pipeline import (
+    export_predictions_to_label_studio,
     export_to_label_studio,
     export_pseudo_labels,
     prepare_dataset,
@@ -21,6 +22,7 @@ from toothseg.pipeline import (
     publish_pseudo_labels,
     train,
     validate,
+    visualize_labels,
 )
 
 
@@ -53,6 +55,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("to-labelstudio")
     p.add_argument("--data", type=Path, default=Path("dataset/raw"))
     p.add_argument("--output", type=Path, default=Path("output/to_labelstudio"))
+    p.add_argument("--image-url-prefix", default="/data/local-files/?d=images")
+    p.add_argument("--overwrite", action="store_true")
+
+    p = sub.add_parser("visualize-labels", help="Render YOLO detection labels onto image copies.")
+    p.add_argument("--data", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--overwrite", action="store_true")
+
+    p = sub.add_parser(
+        "prediction-to-labelstudio",
+        help="Convert predict-visualize output into editable Label Studio predictions.",
+    )
+    p.add_argument("--predict", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
     p.add_argument("--image-url-prefix", default="/data/local-files/?d=images")
     p.add_argument("--overwrite", action="store_true")
 
@@ -122,6 +138,10 @@ def main() -> None:
         print(publish_pseudo_labels(args.candidates, args.raw))
     elif args.cmd == "to-labelstudio":
         print(export_to_label_studio(args.data, args.output, args.image_url_prefix, args.overwrite))
+    elif args.cmd == "prediction-to-labelstudio":
+        print(export_predictions_to_label_studio(args.predict, args.output, args.image_url_prefix, args.overwrite))
+    elif args.cmd == "visualize-labels":
+        print(visualize_labels(args.data, args.output, args.overwrite))
     elif args.cmd == "train":
         data_yaml = args.data_yaml
         if args.data is not None:

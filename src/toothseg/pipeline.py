@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import Any
 
 from .data import (
+    export_prediction_visualizations_to_label_studio,
     export_yolo_detection_to_label_studio,
     export_pseudo_label_candidates,
     prepare_raw_yolo_dataset,
     publish_approved_pseudo_labels,
     validate_yolo_detection_dataset,
+    visualize_yolo_detection_annotations,
 )
 from .model import (
     predict_directory,
@@ -54,6 +56,21 @@ def export_to_label_studio(
     overwrite: bool = False,
 ) -> Path:
     return export_yolo_detection_to_label_studio(raw_root, output_root, image_url_prefix, overwrite)
+
+
+def export_predictions_to_label_studio(
+    predict_root: Path,
+    output_root: Path,
+    image_url_prefix: str = "/data/local-files/?d=images",
+    overwrite: bool = False,
+) -> Path:
+    return export_prediction_visualizations_to_label_studio(
+        predict_root, output_root, image_url_prefix, overwrite
+    )
+
+
+def visualize_labels(dataset_root: Path, output_root: Path, overwrite: bool = False) -> Path:
+    return visualize_yolo_detection_annotations(dataset_root, output_root, overwrite)
 
 
 def train(

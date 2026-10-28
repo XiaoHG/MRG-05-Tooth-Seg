@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 @dataclass(frozen=True)
@@ -607,6 +607,261 @@ def export_yolo_detection_to_label_studio(
         encoding="utf-8",
     )
     return output_root / "tasks.json"
+
+
+def export_prediction_visualizations_to_label_studio(
+    predict_root: Path,
+    output_root: Path,
+    image_url_prefix: str = "/data/local-files/?d=images",
+    overwrite: bool = False,
+) -> Path:
+    """Export aggregate detection predictions as editable Label Studio tasks."""
+    predictions_path = predict_root / "predictions.json"
+    if not predictions_path.is_file():
+        raise FileNotFoundError(f"Aggregate predictions not found: {predictions_path}")
+    payload = json.loads(predictions_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(f"Expected a non-empty prediction object in: {predictions_path}")
+
+    predict_root_resolved = predict_root.resolve()
+    prepared_records = []
+    task_ids: set[str] = set()
+    target_names: set[str] = set()
+    for record_name, record in payload.items():
+        if not isinstance(record_name, str) or not isinstance(record, dict):
+            raise ValueError(f"Invalid prediction record in: {predictions_path}")
+        if "error" in record:
+            raise ValueError(f"Prediction failed for {record_name}: {record['error']}")
+
+        source_value = record.get("source_image")
+        if not isinstance(source_value, str) or not source_value:
+            raise ValueError(f"Missing source_image for prediction: {record_name}")
+        source_path = (predict_root / Path(source_value)).resolve()
+        if predict_root_resolved not in source_path.parents:
+            raise ValueError(f"source_image escapes prediction directory: {source_value}")
+        if not source_path.is_file() or source_path.suffix.lower() not in _IMAGE_SUFFIXES:
+            raise FileNotFoundError(f"Prediction source image not found: {source_path}")
+
+        with Image.open(source_path) as image:
+            image_width, image_height = image.size
+        if record.get("image_width") != image_width or record.get("image_height") != image_height:
+            raise ValueError(f"Prediction dimensions do not match source image: {source_path}")
+
+        relative_source = source_path.relative_to(predict_root_resolved)
+        source_group = relative_source.parent.as_posix()
+        task_prefix = "--".join(relative_source.parent.parts) if relative_source.parent.parts else "root"
+        task_id = f"{task_prefix}--{source_path.stem}"
+        target_name = f"{task_id}{source_path.suffix.lower()}"
+        if task_id in task_ids or target_name in target_names:
+            raise ValueError(f"Duplicate Label Studio task generated for: {source_value}")
+        task_ids.add(task_id)
+        target_names.add(target_name)
+
+        detections = record.get("detections")
+        if not isinstance(detections, list):
+            raise ValueError(f"Missing detections for prediction: {record_name}")
+        results = []
+        for detection_index, detection in enumerate(detections, start=1):
+            if not isinstance(detection, dict) or detection.get("class_id") != 0:
+                raise ValueError(f"Unexpected detection class for prediction: {record_name}")
+            values = detection.get("box_normalized_xywh")
+            if not isinstance(values, list) or len(values) != 4:
+                raise ValueError(f"Invalid normalized box for prediction: {record_name}")
+            x_center, y_center, width, height = (float(value) for value in values)
+            confidence = float(detection.get("confidence"))
+            if not all(math.isfinite(value) for value in (x_center, y_center, width, height, confidence)):
+                raise ValueError(f"Non-finite detection value for prediction: {record_name}")
+            if not (0 <= x_center <= 1 and 0 <= y_center <= 1 and width > 0 and height > 0):
+                raise ValueError(f"Invalid normalized box for prediction: {record_name}")
+            if not 0 <= confidence <= 1:
+                raise ValueError(f"Invalid confidence for prediction: {record_name}")
+
+            left = max(0.0, x_center - width / 2)
+            top = max(0.0, y_center - height / 2)
+            right = min(1.0, x_center + width / 2)
+            bottom = min(1.0, y_center + height / 2)
+            if right <= left or bottom <= top:
+                raise ValueError(f"Detection has no visible area for prediction: {record_name}")
+            results.append(
+                {
+                    "id": f"{task_id}-{detection_index}",
+                    "from_name": "tooth",
+                    "to_name": "image",
+                    "type": "rectanglelabels",
+                    "original_width": image_width,
+                    "original_height": image_height,
+                    "image_rotation": 0,
+                    "score": confidence,
+                    "value": {
+                        "x": round(left * 100, 6),
+                        "y": round(top * 100, 6),
+                        "width": round((right - left) * 100, 6),
+                        "height": round((bottom - top) * 100, 6),
+                        "rotation": 0,
+                        "rectanglelabels": ["tooth"],
+                    },
+                }
+            )
+        prepared_records.append((task_id, source_group, source_path, target_name, results))
+
+    if output_root.exists() and any(output_root.iterdir()):
+        if not overwrite:
+            raise FileExistsError(f"Label Studio output already exists: {output_root}. Use overwrite=True to replace it.")
+        shutil.rmtree(output_root)
+
+    normalized_prefix = image_url_prefix.rstrip("/")
+    images_dir = output_root / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    tasks = []
+    manifest_records = []
+    for task_id, source_group, source_path, target_name, results in prepared_records:
+        target_image = images_dir / target_name
+        shutil.copy2(source_path, target_image)
+        tasks.append(
+            {
+                "id": task_id,
+                "data": {
+                    "image": f"{normalized_prefix}/{target_name}",
+                    "source_group": source_group,
+                    "source_filename": source_path.name,
+                },
+                "predictions": [{"model_version": "yolo-detection-import", "result": results}],
+            }
+        )
+        manifest_records.append(
+            {
+                "task_id": task_id,
+                "image": target_name,
+                "source_group": source_group,
+                "source_image": str(source_path),
+                "source_image_sha256": _sha256(source_path),
+                "box_count": len(results),
+            }
+        )
+
+    (output_root / "tasks.json").write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_root / "label_config.xml").write_text(
+        "<View>\n"
+        "  <Header value=\"Source group: $source_group | File: $source_filename\"/>\n"
+        "  <Image name=\"image\" value=\"$image\"/>\n"
+        "  <RectangleLabels name=\"tooth\" toName=\"image\">\n"
+        "    <Label value=\"tooth\" background=\"#e74c3c\"/>\n"
+        "  </RectangleLabels>\n"
+        "</View>\n",
+        encoding="utf-8",
+    )
+    (output_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "prediction-to-labelstudio-v1",
+                "task": "Label Studio editable tooth detection pre-annotations",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "predict_root": str(predict_root),
+                "source_predictions": str(predictions_path),
+                "source_predictions_sha256": _sha256(predictions_path),
+                "image_url_prefix": normalized_prefix,
+                "task_count": len(tasks),
+                "records": manifest_records,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (output_root / "README.md").write_text(
+        "# Label Studio review package\n\n"
+        "This directory contains copied source images and editable YOLO tooth-detection predictions. "
+        "The rectangles are model predictions for manual review, not segmentation masks, FDI tooth positions, "
+        "fluorosis grades, or verified ground truth.\n\n"
+        "Set both `LOCAL_FILES_SERVING_ENABLED` and `LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED` to `true`. "
+        "Set both `LOCAL_FILES_DOCUMENT_ROOT` and `LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT` to this directory, "
+        "then restart every running Label Studio process. "
+        "In the Label Studio project, use `label_config.xml`, add `images/` as Local Files source storage, "
+        "then import `tasks.json`. Do not synchronize the storage as a second task import.\n\n"
+        f"Expected task count: {len(tasks)}. Traceability and SHA-256 values are in `manifest.json`.\n",
+        encoding="utf-8",
+    )
+    return output_root / "tasks.json"
+
+
+def visualize_yolo_detection_annotations(
+    dataset_root: Path,
+    output_root: Path,
+    overwrite: bool = False,
+) -> Path:
+    """Render YOLO detection labels onto image copies without changing source files."""
+    images, labels, classes, box_count = _validate_source_dataset(dataset_root)
+    if classes != ["tooth"]:
+        raise ValueError(f"Expected the single class 'tooth', found: {classes}")
+
+    label_by_stem = {path.stem: path for path in labels}
+    prepared_records = []
+    for image_path in images:
+        label_path = label_by_stem[image_path.stem]
+        with Image.open(image_path) as image:
+            image.verify()
+        boxes = []
+        for line in label_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            _, x_center, y_center, width, height = line.split()
+            boxes.append(tuple(float(value) for value in (x_center, y_center, width, height)))
+        prepared_records.append((image_path, label_path, boxes))
+
+    if output_root.exists() and any(output_root.iterdir()):
+        if not overwrite:
+            raise FileExistsError(f"Visualization output already exists: {output_root}. Use overwrite=True to replace it.")
+        shutil.rmtree(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    manifest_records = []
+    for image_path, label_path, boxes in prepared_records:
+        with Image.open(image_path) as source:
+            visualization = source.convert("RGB")
+        draw = ImageDraw.Draw(visualization)
+        line_width = max(3, round(min(visualization.size) / 64))
+        for x_center, y_center, width, height in boxes:
+            left = max(0.0, (x_center - width / 2) * visualization.width)
+            top = max(0.0, (y_center - height / 2) * visualization.height)
+            right = min(float(visualization.width - 1), (x_center + width / 2) * visualization.width)
+            bottom = min(float(visualization.height - 1), (y_center + height / 2) * visualization.height)
+            draw.rectangle((left, top, right, bottom), outline="#FFFF00", width=line_width)
+
+        target_path = output_root / image_path.name
+        visualization.save(target_path)
+        manifest_records.append(
+            {
+                "image": image_path.name,
+                "source_image": str(image_path),
+                "source_image_sha256": _sha256(image_path),
+                "source_label": str(label_path),
+                "source_label_sha256": _sha256(label_path),
+                "visualization": target_path.name,
+                "visualization_sha256": _sha256(target_path),
+                "box_count": len(boxes),
+            }
+        )
+
+    manifest_path = output_root / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version": "yolo-annotation-visualization-v1",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "dataset_root": str(dataset_root),
+                "classes": classes,
+                "image_count": len(images),
+                "box_count": box_count,
+                "style": {"box_color": "#FFFF00", "label_type": "YOLO detection boxes"},
+                "records": manifest_records,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def export_pseudo_label_candidates(

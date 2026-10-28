@@ -311,6 +311,30 @@ python cli/main.py predict-visualize \
 
 `predict` 和 `predict-dir` 为每张图像生成原图、检测框叠加图、检测 JSON 和牙齿裁剪图；目录推理还会在输出根目录生成汇总的 `predictions.json`。`predict-visualize` 生成扁平化叠加图和聚合的 `predictions.json`。每条检测记录包含 `class_id`、`class_name`、`confidence`、像素坐标 `box_xyxy` 和与训练标签对应的归一化 `box_normalized_xywh`，便于和标注及不同模型结果进行对比。
 
+### 将可视化推理结果导入 Label Studio 复核
+
+`prediction-to-labelstudio` 读取 `predict-visualize` 生成的聚合 `predictions.json`，拷贝其中引用的原图，并将单类别 `tooth` 检测框转换为 Label Studio 可编辑的 `predictions`。它不会使用 `_overlay.png` 叠加图，也不会修改推理目录中的原图或 JSON。目标目录非空时默认拒绝执行，只有明确传入 `--overwrite` 才会重建目标目录。
+
+```powershell
+python cli/main.py prediction-to-labelstudio `
+  --predict output/predict/dental_fluorosis/yolo11n `
+  --output output/predict/dental_fluorosis/labelstudio/before
+```
+
+输出包括 `images/` 原图副本、`tasks.json`、`label_config.xml`、`manifest.json` 和导入说明 `README.md`。本机 Label Studio 启动前，将 `LOCAL_FILES_SERVING_ENABLED` 和 `LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED` 都设为 `true`，将 `LOCAL_FILES_DOCUMENT_ROOT` 和 `LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT` 都指向上述 `before` 目录，然后关闭全部旧进程并重新启动 Label Studio。项目使用 `label_config.xml`，把 `before/images` 添加为 Local Files source storage，但不要执行同步，然后导入 `tasks.json`。已有框只是待人工复核的牙齿检测预测，不是像素级分割、FDI 牙位、氟斑牙分级或人工真值。
+
+### 可视化人工复核后的 YOLO 检测框
+
+Label Studio 导出的 `images/`、`labels/` 和 `classes.txt` 可通过 `visualize-labels` 生成黄色检测框叠加图。命令只读取原图和标签，在单独的输出目录写入派生图片与哈希清单，不会覆盖源文件；输出目录非空时默认拒绝执行。
+
+```powershell
+python cli/main.py visualize-labels `
+  --data output/predict/dental_fluorosis/labelstudio/after `
+  --output output/predict/dental_fluorosis/labelstudio/after/visualization
+```
+
+生成的 `visualization/manifest.json` 记录图像数、检测框数、源图和源标签 SHA-256，可用于确认可视化前后的来源未被修改。这里展示的是人工复核后的单类别牙齿边界框，不是像素级分割掩码或氟斑牙分级结果。
+
 批量推理遇到无法解码的图片时会跳过该图片并在聚合 JSON 中记录 `error`，不会中断剩余任务。`--device 0` 才会显式使用第一块 CUDA GPU；图片读取、绘制和保存仍由 CPU 完成。
 
 ## Kaggle 训练

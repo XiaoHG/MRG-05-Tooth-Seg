@@ -3,7 +3,11 @@ import json
 import pytest
 from PIL import Image
 
-from toothseg.data import export_yolo_detection_to_label_studio
+from toothseg.data import (
+    export_prediction_visualizations_to_label_studio,
+    export_yolo_detection_to_label_studio,
+    visualize_yolo_detection_annotations,
+)
 
 
 def _write_raw_source(root, source_name, image_name, label_text):
@@ -70,3 +74,99 @@ def test_export_to_label_studio_requires_explicit_overwrite(tmp_path):
         export_yolo_detection_to_label_studio(raw, output)
 
     export_yolo_detection_to_label_studio(raw, output, overwrite=True)
+
+
+def _write_prediction_visualization_output(root):
+    (root / "01-normal").mkdir(parents=True)
+    Image.new("RGB", (200, 100), "white").save(root / "01-normal" / "mouth.png")
+    payload = {
+        "mouth.png": {
+            "source_image": "01-normal/mouth.png",
+            "visualization": "mouth_overlay.png",
+            "image_width": 200,
+            "image_height": 100,
+            "detections": [
+                {
+                    "index": 1,
+                    "class_id": 0,
+                    "class_name": "tooth",
+                    "confidence": 0.9,
+                    "box_xyxy": [50.0, 25.0, 150.0, 75.0],
+                    "box_normalized_xywh": [0.5, 0.5, 0.5, 0.5],
+                }
+            ],
+        }
+    }
+    (root / "predictions.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_export_prediction_visualizations_copies_sources_and_writes_predictions(tmp_path):
+    predict_root = tmp_path / "predict"
+    _write_prediction_visualization_output(predict_root)
+
+    tasks_path = export_prediction_visualizations_to_label_studio(
+        predict_root, tmp_path / "labelstudio" / "before"
+    )
+
+    tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
+    assert tasks[0]["id"] == "01-normal--mouth"
+    assert tasks[0]["data"]["source_group"] == "01-normal"
+    assert tasks[0]["data"]["image"].endswith("/01-normal--mouth.png")
+    result = tasks[0]["predictions"][0]["result"][0]
+    assert result["score"] == 0.9
+    assert result["value"]["x"] == 25.0
+    assert result["value"]["width"] == 50.0
+    copied = tmp_path / "labelstudio" / "before" / "images" / "01-normal--mouth.png"
+    assert copied.read_bytes() == (predict_root / "01-normal" / "mouth.png").read_bytes()
+    manifest = json.loads((copied.parent.parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["task_count"] == 1
+    assert manifest["records"][0]["box_count"] == 1
+
+
+def test_export_prediction_visualizations_refuses_nonempty_output(tmp_path):
+    predict_root = tmp_path / "predict"
+    _write_prediction_visualization_output(predict_root)
+    output = tmp_path / "before"
+    output.mkdir()
+    (output / "keep.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="Use overwrite=True"):
+        export_prediction_visualizations_to_label_studio(predict_root, output)
+
+    assert (output / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_visualize_yolo_annotations_preserves_sources_and_draws_boxes(tmp_path):
+    dataset = tmp_path / "after"
+    (dataset / "images").mkdir(parents=True)
+    (dataset / "labels").mkdir()
+    (dataset / "classes.txt").write_text("tooth\n", encoding="utf-8")
+    image_path = dataset / "images" / "mouth.png"
+    label_path = dataset / "labels" / "mouth.txt"
+    Image.new("RGB", (100, 50), "white").save(image_path)
+    label_path.write_text("0 0.5 0.5 0.5 0.5\n", encoding="utf-8")
+    source_image = image_path.read_bytes()
+    source_label = label_path.read_bytes()
+
+    manifest_path = visualize_yolo_detection_annotations(dataset, dataset / "visualization")
+
+    assert image_path.read_bytes() == source_image
+    assert label_path.read_bytes() == source_label
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["image_count"] == 1
+    assert manifest["box_count"] == 1
+    with Image.open(dataset / "visualization" / "mouth.png") as rendered:
+        assert rendered.getpixel((25, 12)) == (255, 255, 0)
+
+
+def test_visualize_yolo_annotations_refuses_nonempty_output(tmp_path):
+    dataset = tmp_path / "after"
+    _write_raw_source(tmp_path, "after", "mouth.png", "0 0.5 0.5 0.5 0.5\n")
+    output = dataset / "visualization"
+    output.mkdir()
+    (output / "keep.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="Use overwrite=True"):
+        visualize_yolo_detection_annotations(dataset, output)
+
+    assert (output / "keep.txt").read_text(encoding="utf-8") == "keep"
