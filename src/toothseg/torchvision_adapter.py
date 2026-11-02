@@ -257,8 +257,12 @@ def _iou(box, boxes):
     return inter / (area + areas - inter).clamp(min=1e-7)
 
 
-def validate_torchvision_detection(weights: Path, data_yaml: Path, device: str | None = None) -> dict[str, float]:
-    model = load_torchvision_model(weights); return evaluate_torchvision_detection(model, data_yaml, "val", _device(device))
+def validate_torchvision_detection(
+    weights: Path, data_yaml: Path, split: str = "val", device: str | None = None
+) -> dict[str, float]:
+    dev = _device(device)
+    model = load_torchvision_model(weights).to(dev)
+    return evaluate_torchvision_detection(model, data_yaml, split, dev)
 
 
 def predict_torchvision(weights: Path, image_path: Path, conf: float = 0.25, device: str | None = None) -> dict[str, Any]:

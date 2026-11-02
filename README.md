@@ -269,7 +269,24 @@ python cli/main.py val \
   --data dataset/OMNI_COCO/after
 ```
 
-模型选择和调参使用 `val`。最终模型确定后，使用包含 `test` 路径和标签的标准数据视图进行一次独立测试评估。当前 CLI 的 `val` 命令默认调用 Ultralytics 的 `val` split；如需评估 `test`，应准备将 `test` 设为评估 split 的 YAML，或直接使用 Ultralytics API/命令指定 `split=test`。
+在固定、独立、带人工标签的 `test` 集上评估（模型和参数确定后使用）：
+
+```bash
+python cli/main.py val \
+  --weights output/train/omni-coco-after-yolo11n/weights/best.pt \
+  --data dataset/OMNI_COCO/after \
+  --split test
+```
+
+`--split` 支持 `train` / `val` / `test`，默认 `val`。模型选择和调参使用 `val`，最终模型确定后再用 `--split test` 做一次独立测试评估。该参数透传到三个后端：Ultralytics（`model.val(split=...)`）、torchvision（`evaluate_torchvision_detection(..., split, ...)`）和 RT-DETRv2-L（`_ExternalYoloDataset(data_yaml, split)`）。注意 RF-DETR-M 的原生 `validate` 读取自身物化的 `valid` 视图，不接受 `split` 参数，因此 `--split` 对 RF-DETR-M 无效。
+
+在固定 `test` 集上批量评估全部对比模型并汇总指标：
+
+```bash
+python tools/eval_test_set.py --split test
+```
+
+脚本按 `tools/eval_test_set.py` 内建的模型清单（9 个模型）依次评估，结果写入 `output/val-test/results.csv` 和 `README.md`。RF-DETR-M 因不支持 `--split` 会被跳过并标注原因；也可用 `--models yolo11n yolo11s` 只跑子集。
 
 报告中至少保存 precision、recall、mAP50、mAP50-95、训练耗时和推理速度。before/after 或不同模型的比较必须使用相同的图像、标签和评估协议。
 

@@ -101,8 +101,8 @@ def train(
     )
 
 
-def validate(weights: Path, data_yaml: Path) -> Any:
-    return validate_yolo_detection(weights, data_yaml)
+def validate(weights: Path, data_yaml: Path, split: str = "val") -> Any:
+    return validate_yolo_detection(weights, data_yaml, split=split)
 
 
 def predict(

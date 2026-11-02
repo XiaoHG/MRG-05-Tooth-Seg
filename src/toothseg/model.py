@@ -71,22 +71,24 @@ def train_yolo_detection(
     return Path(result.save_dir) / "weights" / "best.pt"
 
 
-def validate_yolo_detection(weights: Path, data_yaml: Path, project: str = "output/val") -> Any:
+def validate_yolo_detection(
+    weights: Path, data_yaml: Path, project: str = "output/val", split: str = "val"
+) -> Any:
     metadata = _read_checkpoint_metadata(weights)
     spec = require_trainable_model(metadata.get("model_name", weights.name))
     if spec.backend == "torchvision":
         from .torchvision_adapter import validate_torchvision_detection
-        return validate_torchvision_detection(weights, data_yaml)
+        return validate_torchvision_detection(weights, data_yaml, split=split)
     if spec.backend in {"transformers", "rfdetr"}:
         from .external_adapter import validate_external_detection
-        metrics = validate_external_detection(weights, data_yaml, spec.name)
+        metrics = validate_external_detection(weights, data_yaml, spec.name, split=split)
         output = Path(project) / "tooth-detect"
         output.mkdir(parents=True, exist_ok=True)
         (output / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         return output
     YOLO = _require_ultralytics()
     model = YOLO(str(weights))
-    result = model.val(data=str(data_yaml), project=project, name="tooth-detect")
+    result = model.val(data=str(data_yaml), project=project, name="tooth-detect", split=split)
     save_dir = getattr(result, "save_dir", None)
     return Path(save_dir) if save_dir is not None else Path(project) / "tooth-detect"
 

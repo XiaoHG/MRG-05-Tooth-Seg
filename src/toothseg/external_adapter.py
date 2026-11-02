@@ -334,9 +334,11 @@ def _torch_device(value: Any):
     return torch.device(requested or ("cuda" if torch.cuda.is_available() else "cpu"))
 
 
-def validate_external_detection(weights: Path, data_yaml: Path, model_name: str, **kwargs: Any) -> dict[str, float]:
+def validate_external_detection(
+    weights: Path, data_yaml: Path, model_name: str, split: str = "val", **kwargs: Any
+) -> dict[str, float]:
     if "rtdetrv2" in model_name.lower().replace("-", "").replace("_", ""):
-        return _validate_rtdetrv2(weights, data_yaml, kwargs.get("device"))
+        return _validate_rtdetrv2(weights, data_yaml, split, kwargs.get("device"))
     model = build_external_model(model_name, weights, **kwargs)
     if not hasattr(model, "validate") and not hasattr(model, "val"):
         raise RuntimeError(f"Native {model_name} package does not expose a validation API.")
@@ -347,20 +349,14 @@ def validate_external_detection(weights: Path, data_yaml: Path, model_name: str,
     return {"result": float(result)} if isinstance(result, (int, float)) else {}
 
 
-def _validate_rtdetrv2(weights: Path, data_yaml: Path, device: Any = None) -> dict[str, float]:
-    import torch
+def _validate_rtdetrv2(weights: Path, data_yaml: Path, split: str = "val", device: Any = None) -> dict[str, float]:
     (AutoImageProcessor,) = _transformers_symbols("AutoImageProcessor")
     model = build_external_model("rtdetrv2-l", weights)
     processor = AutoImageProcessor.from_pretrained(str(weights))
-    dataset = _ExternalYoloDataset(data_yaml, "val")
-    dev = _torch_device(device); model.to(dev).eval(); losses = []
-    with torch.no_grad():
-        for image, annotations, _ in (dataset[index] for index in range(len(dataset))):
-            encoded = processor(images=image, annotations=annotations, return_tensors="pt")
-            inputs = {key: value.to(dev) for key, value in encoded.items() if key != "labels"}
-            labels = [{key: value.to(dev) if hasattr(value, "to") else value for key, value in encoded["labels"][0].items()}]
-            losses.append(float(model(**inputs, labels=labels).loss.detach().cpu()))
-    return {"val_loss": sum(losses) / max(1, len(losses))}
+    dataset = _ExternalYoloDataset(data_yaml, split)
+    dev = _torch_device(device)
+    model.to(dev).eval()
+    return _evaluate_rtdetrv2(model, processor, dataset, dev)
 
 
 def predict_external(weights: Path, image_path: Path, model_name: str, **kwargs: Any) -> dict[str, Any]:

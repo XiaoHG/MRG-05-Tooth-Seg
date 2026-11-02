@@ -92,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     val_data_group = p.add_mutually_exclusive_group(required=True)
     val_data_group.add_argument("--data", type=Path, help="Dataset root; a runtime YAML is generated automatically.")
     val_data_group.add_argument("--data-yaml", type=Path, help="Existing Ultralytics YAML (legacy option).")
+    p.add_argument("--split", choices=["train", "val", "test"], default="val", help="Dataset split to evaluate on.")
 
     p = sub.add_parser("predict")
     p.add_argument("--weights", type=Path, required=True)
@@ -165,7 +166,7 @@ def main() -> None:
         data_yaml = args.data_yaml
         if args.data is not None:
             data_yaml = materialize_yolo_data_yaml(args.data, Path("output") / ".runtime-val")
-        print(validate(args.weights, data_yaml))
+        print(validate(args.weights, data_yaml, split=args.split))
     elif args.cmd == "predict":
         print(predict(args.weights, args.image, args.output, conf=args.conf, device=args.device))
     elif args.cmd == "predict-dir":
