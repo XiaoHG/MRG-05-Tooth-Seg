@@ -1,14 +1,13 @@
 """Run fixed test-set validation for every comparison model and aggregate the metrics.
 
-Uses the manually reviewed ``after`` labels (``dataset/OMNI_COCO/after``) as ground
-truth and evaluates on the fixed ``test`` split. Requires the training environment
-(ultralytics / torch / torchvision / transformers) to be installed.
+Evaluates the 8-model comparison set on the fixed ``test`` split of
+``dataset/OMNI_COCO/<variant>`` (``after`` = manually reviewed labels, ``before`` =
+pre-review labels), using the weights trained on the matching variant. Requires the
+training environment (ultralytics / torch / torchvision / transformers) to be
+installed.
 
 Notes
 -----
-* RF-DETR-M is excluded: its native ``validate`` reads its own materialized ``valid``
-  view and does not accept a ``--split`` argument, so a test-set result cannot be
-  produced through the same protocol.
 * RT-DETRv2-L reports mAP through ``_evaluate_rtdetrv2`` (same metric keys as the
   torchvision adapter).
 """
@@ -35,17 +34,40 @@ METRIC_KEYS = (
     "metrics/mAP50-95(B)",
 )
 
-# (name, weights path relative to ROOT, model_name, split_supported)
+# (name, {"after": weights, "before": weights} relative to ROOT, model_name)
 MODELS = [
-    ("yolo11n", "output/train/omni_coco/yolo11n/omni-coco-after-result/toothseg-output/train/omni-coco-after-v4/weights/best.pt", "yolo11n.pt", True),
-    ("yolo11s", "output/train/omni_coco/yolo11s/omni-coco-after-result/toothseg-output/train/omni-coco-after-v4/weights/best.pt", "yolo11s.pt", True),
-    ("yolov8m", "output/train/omni_coco/yolov8m/omni-coco-yolov8m-after-result/toothseg-output/train/omni-coco-yolov8m-after/weights/best.pt", "yolov8m.pt", True),
-    ("yolo26m", "output/train/omni_coco/yolo26m/omni-coco-yolo26m-after-result/toothseg-output/train/omni-coco-yolo26m-after/weights/best.pt", "yolo26m.pt", True),
-    ("rtdetr-l", "output/train/omni_coco/rtdetr-l/omni-coco-rtdetr-l-after-v4-result/toothseg-output/train/omni-coco-rtdetr-l-after-v4/weights/best.pt", "rtdetr-l.pt", True),
-    ("faster-r-cnn", "output/train/omni_coco/faster-r-cnn/omni-coco-after-fasterrcnn/best.pt", "fasterrcnn_resnet50_fpn", True),
-    ("retinanet", "output/train/omni_coco/retinanet/omni-coco-after-retinanet/best.pt", "retinanet_resnet50_fpn", True),
-    ("rtdetrv2-l", "output/train/omni_coco/rtdetrv2-l/omni-coco-after-rtdetrv2l", "rtdetrv2-l", True),
-    ("rf-detr-m", "output/train/omni_coco/rfdetr-m/omni-coco-after-rfdetrm/checkpoint_best_total.pth", "rf-detr-m", False),
+    ("yolo11n", {
+        "after": "output/train/omni_coco/yolo11n/omni-coco-yolo11n-after-result/kaggle/working/toothseg-output/train/omni-coco-yolo11n-after-result/weights/best.pt",
+        "before": "output/train/omni_coco/yolo11n/omni-coco-yolo11n-before-result/kaggle/working/toothseg-output/train/omni-coco-yolo11n-before-result/weights/best.pt",
+    }, "yolo11n.pt"),
+    ("yolo11s", {
+        "after": "output/train/omni_coco/yolo11s/omni-coco-after-result/toothseg-output/train/omni-coco-after-v4/weights/best.pt",
+        "before": "output/train/omni_coco/yolo11s/omni-coco-before-result/toothseg-output/train/omni-coco-before-v4/weights/best.pt",
+    }, "yolo11s.pt"),
+    ("yolov8m", {
+        "after": "output/train/omni_coco/yolov8m/omni-coco-yolov8m-after-result/toothseg-output/train/omni-coco-yolov8m-after/weights/best.pt",
+        "before": "output/train/omni_coco/yolov8m/omni-coco-yolov8m-before-result/toothseg-output/train/omni-coco-yolov8m-before/weights/best.pt",
+    }, "yolov8m.pt"),
+    ("yolo26m", {
+        "after": "output/train/omni_coco/yolo26m/omni-coco-yolo26m-after-result/toothseg-output/train/omni-coco-yolo26m-after/weights/best.pt",
+        "before": "output/train/omni_coco/yolo26m/omni-coco-yolo26m-before-result/toothseg-output/train/omni-coco-yolo26m-before/weights/best.pt",
+    }, "yolo26m.pt"),
+    ("rtdetr-l", {
+        "after": "output/train/omni_coco/rtdetr-l/omni-coco-rtdetr-l-after-v4-result/toothseg-output/train/omni-coco-rtdetr-l-after-v4/weights/best.pt",
+        "before": "output/train/omni_coco/rtdetr-l/omni-coco-rtdetr-l-before-v4-result/toothseg-output/train/omni-coco-rtdetr-l-before-v4/weights/best.pt",
+    }, "rtdetr-l.pt"),
+    ("faster-r-cnn", {
+        "after": "output/train/omni_coco/faster-r-cnn/omni-coco-after-fasterrcnn/best.pt",
+        "before": "output/train/omni_coco/faster-r-cnn/omni-coco-before-fasterrcnn/best.pt",
+    }, "fasterrcnn_resnet50_fpn"),
+    ("retinanet", {
+        "after": "output/train/omni_coco/retinanet/omni-coco-after-retinanet/best.pt",
+        "before": "output/train/omni_coco/retinanet/omni-coco-before-retinanet/best.pt",
+    }, "retinanet_resnet50_fpn"),
+    ("rtdetrv2-l", {
+        "after": "output/train/omni_coco/rtdetrv2-l/omni-coco-after-rtdetrv2l",
+        "before": "output/train/omni_coco/rtdetrv2-l/omni-coco-before-rtdetrv2l",
+    }, "rtdetrv2-l"),
 ]
 
 
@@ -71,13 +93,17 @@ def _format(value) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, default=ROOT / "dataset/OMNI_COCO/after")
+    parser.add_argument("--variant", choices=["after", "before"], default="after",
+                        help="Label/weights variant to evaluate (default: after).")
+    parser.add_argument("--data", type=Path, default=None,
+                        help="Data root (default: dataset/OMNI_COCO/<variant>).")
     parser.add_argument("--output", type=Path, default=ROOT / "output/val-test")
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")
     parser.add_argument("--models", nargs="*", default=None, help="Optional subset of model names to run.")
     args = parser.parse_args()
 
-    data_yaml = materialize_yolo_data_yaml(args.data, args.output / ".runtime")
+    data_root = args.data if args.data is not None else ROOT / "dataset/OMNI_COCO" / args.variant
+    data_yaml = materialize_yolo_data_yaml(data_root, args.output / ".runtime")
     selected = [m for m in MODELS if args.models is None or m[0] in args.models]
     if args.models is not None:
         known = {m[0] for m in MODELS}
@@ -87,14 +113,10 @@ def main() -> None:
 
     args.output.mkdir(parents=True, exist_ok=True)
     rows: list[dict] = []
-    for name, rel_weights, model_name, split_supported in selected:
+    for name, weights_by_variant, model_name in selected:
+        rel_weights = weights_by_variant[args.variant]
         weights = ROOT / rel_weights
         row = {"model": name}
-        if not split_supported:
-            print(f"SKIP  {name}: native validate does not support --split (uses its own valid view)")
-            row["status"] = "skipped (no split support)"
-            rows.append(row)
-            continue
         if not weights.exists():
             print(f"SKIP  {name}: weights not found: {weights}")
             row["status"] = "missing weights"
@@ -122,10 +144,9 @@ def main() -> None:
     lines = [
         "# test 集统一评估结果",
         "",
-        f"- 数据：`{args.data}`（after 人工复核标签作为 ground truth）",
+        f"- 数据：`{data_root}`（{args.variant} 标签作为 ground truth）",
         f"- split：`{args.split}`",
         f"- 指标来源：各后端验证返回的 `metrics/precision(B)`、`metrics/recall(B)`、`metrics/mAP50(B)`、`metrics/mAP50-95(B)`",
-        "- RF-DETR-M 原生 `validate` 读取自身物化的 `valid` 视图，不接受 `--split`，因此未纳入本表。",
         "",
         "| 模型 | P(B) | R(B) | mAP50(B) | mAP50-95(B) | 状态 |",
         "| --- | --- | --- | --- | --- | --- |",

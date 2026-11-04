@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toothseg"
+version = "0.1.0"
+description = "Minimal tooth detection and segmentation pipeline"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pillow",
+]
+
+[project.optional-dependencies]
+train = ["ultralytics>=8.3.0", "pyyaml>=6.0", "torch>=2.1", "torchvision>=0.16"]
+external = ["transformers>=4.45", "pyyaml>=6.0", "rfdetr"]
+pretrain = ["transformers>=4.56", "torch>=2.7.1", "torchvision>=0.20"]
+dev = ["pytest"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

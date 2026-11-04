@@ -3,7 +3,20 @@ dataset/
 runs/
 build/
 
+# 本地实验产物与权重（体积大，不进 Git）
+output/
+weights/
+lab_train/weights/
+lab_train/dataset/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
 # pytest 相关
 .pytest_cache/
 .pytest-*/
 
+# macOS 元数据
+.DS_Store
+._*

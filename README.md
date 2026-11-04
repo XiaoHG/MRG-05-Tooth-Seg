@@ -286,9 +286,78 @@ python cli/main.py val \
 python tools/eval_test_set.py --split test
 ```
 
-脚本按 `tools/eval_test_set.py` 内建的模型清单（9 个模型）依次评估，结果写入 `output/val-test/results.csv` 和 `README.md`。RF-DETR-M 因不支持 `--split` 会被跳过并标注原因；也可用 `--models yolo11n yolo11s` 只跑子集。
+脚本按 `tools/eval_test_set.py` 内建的模型清单（8 个正式对比模型）依次评估，结果写入 `output/val-test/results.csv` 和 `README.md`。RF-DETR-M 因原生 `validate` 不支持 `--split` 已从对比清单移除；也可用 `--models yolo11n yolo11s` 只跑子集。
 
 报告中至少保存 precision、recall、mAP50、mAP50-95、训练耗时和推理速度。before/after 或不同模型的比较必须使用相同的图像、标签和评估协议。
+
+## 困难子集语义标注（v13 任务二/三）
+
+在固定 `test` 集上自动初筛困难样本，并人工标注误检/漏检的语义原因（高光 / 金属 / 遮挡 / 门牙 / 其他）：
+
+```bash
+# 1. 自动初筛：按 FP+FN 排序，产出 screen.csv / errors.json（RT-DETRv2-L 检测）
+python tools/hard_subset_screen.py \
+  --weights output/train/omni_coco/rtdetrv2-l/omni-coco-after-rtdetrv2l \
+  --split test
+
+# 2. 生成人工标注工作表（CSV + MD，语义列留空待填）
+python tools/build_annotation_worksheet.py
+
+# 3. 生成内嵌 overlay 缩略图的 Excel 工作表（在此表上人工标注）
+python tools/build_annotation_xlsx.py
+
+# 4. 人工填完 annotation_worksheet.xlsx 后，回写语义列到 CSV
+python tools/sync_annotation_xlsx.py
+
+# 5. 汇总误检类型占比
+python tools/analyze_annotation.py
+
+# 6. 汇总下游检测基线报告（论文 A·A0）
+python tools/build_downstream_report.py
+```
+
+第 5 步读取 `output/hard-subset/annotation_worksheet.csv` 中已填写的 `高光 / 金属 / 遮挡 / 门牙 / 其他` 列，输出 `annotation_summary.md` 的逐类型图数/占比与按子集矩阵，作为任务三「误检类型占比」的输入。语义标签需人工对照 overlay 图像（绿色 GT 框、红色预测框）逐张确认，脚本只汇总、不判定语义原因。
+
+第 6 步把固定 test 集下游基线指标（YOLO11 + RT-DETR-L / RT-DETRv2-L）、困难子集每图 FP/FN、困难/易对比与误检类型占比组装为一份报告，写入 `output/downstream-baseline/README.md`，收口 v13 任务三。DN-DETR / DINOv3 等论文级强基线待 A2 预训练阶段接入（见 `draft/README.md`）。
+
+## 多源牙科数据整合（v14 / 论文 A·A1）
+
+A1 产出两样东西：多源公开牙科数据集清单 + 噪声图剔除规则。前者盘点 AlphaDent、COde、Oral-Diseases、OralSDv1、DentalAI 等公开集合并核对本地已有数据；后者按「黑屏 / 过曝 / 模糊 / 无牙」规则剔除无语义噪声图，为 A2 域内预训练准备干净数据。
+
+```bash
+# 1. 生成多源数据集清单（registry + 本地自动扫描 + 缺口分析）
+python tools/build_dataset_inventory.py
+
+# 2. 噪声图剔除（默认 dry-run，只写报告、不移动文件）
+python tools/filter_noise_images.py --images dataset/positive --recursive
+
+# 2a. 加入模型层：用 yolo11n 检测，无牙/仅低置信度检出 1–2 颗即剔除
+#（模型推理较慢，建议放 Kaggle/Colab 跑；--weights 传 best.pt）
+python tools/filter_noise_images.py \
+  --images dataset/omni_coco-alphadent/images/train \
+  --weights output/train/omni-coco-after-yolo11n/weights/best.pt
+
+# 2b. 确认后执行隔离（把命中图移入 output/a1-data-integration/noise_quarantine/，不删除）
+python tools/filter_noise_images.py --images dataset/positive --recursive --apply
+```
+
+产物写入 `output/a1-data-integration/`：
+
+- `dataset_inventory.md` / `dataset_inventory.json` — 数据集清单（来源/许可/模态/任务/标注/规模/本地状态/本地数量 + 缺口分析）
+- `noise_filter_report.csv` — 逐图特征（亮度/高光占比/清晰度/检出数/置信度）+ 保留/剔除判定与原因
+- `README.md` — 噪声剔除规则与原因分布汇总
+
+静态阈值（`--min-brightness`、`--max-highlight-ratio`、`--min-sharpness`）为起始默认值，需在人工标注样本上校准后再用于全量数据；模型层默认 `--min-teeth 2 --min-confidence 0.5`，对应 `draft/README.md` 的「检测不到牙齿或仅低置信度检出 1–2 颗即剔除」。脚本拒绝运行于 `dataset/raw/`，且 `--apply` 只隔离、不删除。
+
+## 域内预训练（v15 / 论文 A·A2，lab_train）
+
+DINOv3 口内照片域内 continue pretraining（OralDINO）在 `lab_train/` 服务器包内完成（RTX PRO 6000 Blackwell / cu130），不在本地跑：
+
+- 环境与命令：`lab_train/README.md`「七、DINOv3 域内预训练（v15 / 论文 A·A2）」
+- 数据准备：`lab_train/pretrain/prepare_pretrain_data.py`（跨目录 SHA256 去重 → `pretrain_manifest.json`）
+- 训练：`lab_train/pretrain/pretrain.py`（student/teacher EMA + 多裁剪 + 中心化，精简 DINO 参考实现）
+
+自监督预训练只用图像不看标签；DINOv3 权重在 HuggingFace 门控，需 `HF_TOKEN`。`kaggle_train/`、`colab_train/` 不做预训练适配（预训练固定在 lab_train 的 96 GB 卡上）。
 
 ## 推理
 

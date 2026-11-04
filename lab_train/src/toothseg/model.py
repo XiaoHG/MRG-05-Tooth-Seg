@@ -1,0 +1,355 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+# Conda's MKL runtime and PyTorch can load separate Intel OpenMP DLLs on Windows.
+if os.name == "nt":
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+from .model_catalog import find_model_spec, require_trainable_model
+
+
+def _require_ultralytics() -> Any:
+    try:
+        from ultralytics import YOLO
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("ultralytics is required for train/predict. Install with: pip install .[train]") from exc
+    return YOLO
+
+
+def train_yolo_detection(
+    data_yaml: Path,
+    epochs: int = 50,
+    imgsz: int = 1024,
+    batch: int = -1,
+    amp: bool = True,
+    device: str | None = None,
+    project: str = "output/train",
+    name: str = "tooth-detect-v5",
+    weights: Path | None = None,
+    model_name: str = "yolo11n.pt",
+    lr: float | None = None,
+) -> Path:
+    spec = require_trainable_model(model_name)
+    if spec.backend == "torchvision":
+        from .torchvision_adapter import train_torchvision_detection
+        return train_torchvision_detection(data_yaml, spec.name, epochs, imgsz, batch, device, project, name, weights)
+    if spec.backend in {"transformers", "rfdetr"}:
+        from .external_adapter import train_external_detection
+        external_kwargs = {
+            "data_yaml": data_yaml, "model_name": spec.name, "weights": weights, "epochs": epochs,
+            "imgsz": imgsz, "batch": batch, "device": device, "project": project, "name": name,
+        }
+        # RF-DETR validates its Pydantic config strictly and rejects an
+        # explicit ``lr=None``. Omit optional values unless supplied.
+        if lr is not None:
+            external_kwargs["lr"] = lr
+        return train_external_detection(
+            **external_kwargs,
+        )
+    YOLO = _require_ultralytics()
+    model = YOLO(str(weights) if weights is not None else model_name)
+    project_path = Path(project).resolve()
+    kwargs: dict[str, Any] = {
+        "data": str(data_yaml),
+        "epochs": epochs,
+        "imgsz": imgsz,
+        "batch": batch,
+        "amp": amp,
+        "project": str(project_path),
+        "name": name,
+    }
+    if device:
+        kwargs["device"] = device
+    result = model.train(**kwargs)
+    return Path(result.save_dir) / "weights" / "best.pt"
+
+
+def validate_yolo_detection(
+    weights: Path, data_yaml: Path, project: str = "output/val", split: str = "val"
+) -> Any:
+    metadata = _read_checkpoint_metadata(weights)
+    spec = require_trainable_model(metadata.get("model_name", weights.name))
+    if spec.backend == "torchvision":
+        from .torchvision_adapter import validate_torchvision_detection
+        return validate_torchvision_detection(weights, data_yaml, split=split)
+    if spec.backend in {"transformers", "rfdetr"}:
+        from .external_adapter import validate_external_detection
+        metrics = validate_external_detection(weights, data_yaml, spec.name, split=split)
+        output = Path(project) / "tooth-detect"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        return output
+    YOLO = _require_ultralytics()
+    model = YOLO(str(weights))
+    result = model.val(data=str(data_yaml), project=project, name="tooth-detect", split=split)
+    save_dir = getattr(result, "save_dir", None)
+    return Path(save_dir) if save_dir is not None else Path(project) / "tooth-detect"
+
+
+def _predict_image_with_model(
+    model: Any, image_path: Path, conf: float = 0.25, device: str | None = None
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"source": str(image_path), "conf": conf, "verbose": False}
+    if device:
+        kwargs["device"] = device
+    results = model.predict(**kwargs)
+    if not results:
+        raise ValueError(f"Image could not be decoded by Ultralytics: {image_path}")
+    result = results[0]
+
+    source = Image.open(image_path).convert("RGB")
+    image = source.copy()
+    draw = ImageDraw.Draw(image)
+    boxes = []
+    confs = []
+    class_ids = []
+    class_names = []
+    if result.boxes is not None:
+        raw_classes = result.boxes.cls.tolist() if getattr(result.boxes, "cls", None) is not None else []
+        names = getattr(result, "names", {}) or {}
+        for index, (box, score) in enumerate(zip(result.boxes.xyxy.tolist(), result.boxes.conf.tolist())):
+            x1, y1, x2, y2 = map(float, box)
+            boxes.append([x1, y1, x2, y2])
+            confs.append(float(score))
+            class_id = int(raw_classes[index]) if index < len(raw_classes) else 0
+            class_ids.append(class_id)
+            class_names.append(str(names.get(class_id, class_id)) if isinstance(names, dict) else str(class_id))
+            draw.rectangle((x1, y1, x2, y2), outline="#FFFF00", width=5)
+    return {
+        "image": image,
+        "source": source,
+        "boxes": boxes,
+        "confs": confs,
+        "class_ids": class_ids,
+        "class_names": class_names,
+        "raw": result,
+    }
+
+
+def _detection_records(result: dict[str, Any]) -> list[dict[str, Any]]:
+    source = result["source"]
+    class_ids = result.get("class_ids", [])
+    class_names = result.get("class_names", [])
+    records = []
+    for index, (box, score) in enumerate(zip(result["boxes"], result["confs"]), start=1):
+        x1, y1, x2, y2 = map(float, box)
+        class_id = int(class_ids[index - 1]) if index - 1 < len(class_ids) else 0
+        class_name = class_names[index - 1] if index - 1 < len(class_names) else "tooth"
+        records.append(
+            {
+                "index": index,
+                "class_id": class_id,
+                "class_name": class_name,
+                "confidence": float(score),
+                "box_xyxy": [x1, y1, x2, y2],
+                "box_normalized_xywh": [
+                    ((x1 + x2) / 2) / source.width,
+                    ((y1 + y2) / 2) / source.height,
+                    (x2 - x1) / source.width,
+                    (y2 - y1) / source.height,
+                ],
+            }
+        )
+    return records
+
+
+def predict_image(
+    weights: Path, image_path: Path, conf: float = 0.25, device: str | None = None
+) -> dict[str, Any]:
+    metadata = _read_checkpoint_metadata(weights)
+    spec = find_model_spec(metadata.get("model_name", weights.name))
+    if spec is not None and spec.backend == "torchvision":
+        from .torchvision_adapter import predict_torchvision
+        return predict_torchvision(weights, image_path, conf=conf, device=device)
+    if spec is not None and spec.backend in {"transformers", "rfdetr"}:
+        from .external_adapter import predict_external
+        return predict_external(weights, image_path, spec.name, conf=conf, device=device)
+    YOLO = _require_ultralytics()
+    return _predict_image_with_model(YOLO(str(weights)), image_path, conf=conf, device=device)
+
+
+def _read_checkpoint_metadata(weights: Path) -> dict[str, Any]:
+    metadata_path = weights / "model_meta.json" if weights.is_dir() else None
+    if metadata_path is not None and metadata_path.is_file():
+        try:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+    try:
+        import torch
+        checkpoint = torch.load(weights, map_location="cpu", weights_only=False)
+        return checkpoint if isinstance(checkpoint, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_prediction(
+    result: dict[str, Any],
+    output_dir: Path,
+    stem: str,
+    source_path: Path | None = None,
+) -> dict[str, Path]:
+    sample_dir = output_dir / stem
+    sample_dir.mkdir(parents=True, exist_ok=True)
+
+    overlay_path = sample_dir / f"{stem}_overlay.png"
+    original_path = sample_dir / f"{stem}_original.png"
+    json_path = sample_dir / f"{stem}_detections.json"
+    image = result["image"]
+    source = result["source"]
+    source.save(original_path)
+    image.save(overlay_path)
+
+    payload_boxes = []
+    for detection in _detection_records(result):
+        idx = detection["index"]
+        box = detection["box_xyxy"]
+        score = detection["confidence"]
+        x1, y1, x2, y2 = box
+        left = max(0, int(np.floor(x1)))
+        top = max(0, int(np.floor(y1)))
+        right = min(source.width, int(np.ceil(x2)))
+        bottom = min(source.height, int(np.ceil(y2)))
+        if right <= left or bottom <= top:
+            continue
+        crop = source.crop((left, top, right, bottom))
+        crop_path = sample_dir / f"{stem}_{idx}.png"
+        crop.save(crop_path)
+        detection["crop"] = crop_path.name
+        payload_boxes.append(detection)
+
+    payload = {
+        "image": stem,
+        "image_width": source.width,
+        "image_height": source.height,
+        "detections": payload_boxes,
+    }
+    if source_path is not None:
+        payload["source_image"] = source_path.as_posix()
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"original": original_path, "overlay": overlay_path, "json": json_path, "dir": sample_dir}
+
+
+def predict_directory(
+    weights: Path,
+    image_dir: Path,
+    output_dir: Path,
+    conf: float = 0.25,
+    device: str | None = None,
+) -> list[dict[str, Path]]:
+    image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    if not image_dir.exists():
+        raise FileNotFoundError(f"Image directory not found: {image_dir}")
+
+    image_paths = sorted(
+        path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in image_suffixes
+    )
+    if not image_paths:
+        raise ValueError(f"No supported images found in: {image_dir}")
+
+    outputs: list[dict[str, Path]] = []
+    predictions: dict[str, dict[str, Any]] = {}
+    total = len(image_paths)
+    for index, image_path in enumerate(image_paths, start=1):
+        relative_path = image_path.relative_to(image_dir)
+        print(f"[{index}/{total}] {relative_path.as_posix()}")
+        try:
+            if device:
+                result = predict_image(weights, image_path, conf=conf, device=device)
+            else:
+                result = predict_image(weights, image_path, conf=conf)
+        except (OSError, ValueError, IndexError) as exc:
+            print(f"WARNING Skipping unreadable image {relative_path.as_posix()}: {exc}")
+            continue
+        saved = save_prediction(
+                result,
+                output_dir,
+                image_path.stem,
+                source_path=relative_path,
+        )
+        outputs.append(saved)
+        predictions[relative_path.as_posix()] = {
+            "source_image": relative_path.as_posix(),
+            "image_width": result["source"].width,
+            "image_height": result["source"].height,
+            "json": str(saved["json"].relative_to(output_dir).as_posix()),
+            "detections": _detection_records(result),
+        }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "predictions.json").write_text(
+        json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return outputs
+
+
+def predict_directory_visualizations(
+    weights: Path,
+    image_dir: Path,
+    output_dir: Path,
+    conf: float = 0.25,
+    device: str | None = None,
+) -> Path:
+    """Write one annotated image per input plus a single aggregate JSON result."""
+    image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    if not image_dir.exists():
+        raise FileNotFoundError(f"Image directory not found: {image_dir}")
+
+    image_paths = sorted(
+        path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in image_suffixes
+    )
+    if not image_paths:
+        raise ValueError(f"No supported images found in: {image_dir}")
+    names = [path.name for path in image_paths]
+    duplicate_names = sorted({name for name in names if names.count(name) > 1})
+    if duplicate_names:
+        raise ValueError(
+            "Duplicate image names are not supported for aggregate predictions: "
+            + ", ".join(duplicate_names)
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    YOLO = _require_ultralytics()
+    model = YOLO(str(weights))
+    predictions: dict[str, dict[str, Any]] = {}
+
+    def write_predictions() -> None:
+        predictions_path = output_dir / "predictions.json"
+        predictions_path.write_text(json.dumps(predictions, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    write_predictions()
+    total = len(image_paths)
+    for index, image_path in enumerate(image_paths, start=1):
+        relative_path = image_path.relative_to(image_dir)
+        print(f"[{index}/{total}] {relative_path.as_posix()}")
+        try:
+            if device:
+                result = _predict_image_with_model(model, image_path, conf=conf, device=device)
+            else:
+                result = _predict_image_with_model(model, image_path, conf=conf)
+        except (OSError, ValueError, IndexError) as exc:
+            print(f"WARNING Skipping unreadable image {relative_path.as_posix()}: {exc}")
+            predictions[image_path.name] = {
+                "source_image": relative_path.as_posix(),
+                "error": str(exc),
+            }
+            write_predictions()
+            continue
+        overlay_path = output_dir / f"{image_path.stem}_overlay.png"
+        result["image"].save(overlay_path)
+        predictions[image_path.name] = {
+            "source_image": relative_path.as_posix(),
+            "visualization": overlay_path.name,
+            "image_width": result["source"].width,
+            "image_height": result["source"].height,
+            "detections": _detection_records(result),
+        }
+        write_predictions()
+    predictions_path = output_dir / "predictions.json"
+    return predictions_path
