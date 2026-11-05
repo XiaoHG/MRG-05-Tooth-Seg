@@ -355,9 +355,10 @@ DINOv3 口内照片域内 continue pretraining（OralDINO）在 `lab_train/` 服
 
 - 环境与命令：`lab_train/README.md`「七、DINOv3 域内预训练（v15 / 论文 A·A2）」
 - 数据准备：`lab_train/pretrain/prepare_pretrain_data.py`（跨目录 SHA256 去重 → `pretrain_manifest.json`）
-- 训练：`lab_train/pretrain/pretrain.py`（student/teacher EMA + 多裁剪 + 中心化，精简 DINO 参考实现）
+- 训练：`lab_train/pretrain/pretrain.py`（student/teacher EMA + 多裁剪 + 中心化，精简 DINO 参考实现；支持梯度累积和自动 `metrics.csv`/`train.log`）
+- 推荐配置：`lab_train/pretrain/config.512-25g.json`（512 全局 / 128 局部，有效 batch 32，适配约 25 GB 显存）
 
-自监督预训练只用图像不看标签；DINOv3 权重在 HuggingFace 门控，需 `HF_TOKEN`。`kaggle_train/`、`colab_train/` 不做预训练适配（预训练固定在 lab_train 的 96 GB 卡上）。
+自监督预训练只用图像不看标签；DINOv3 权重在 HuggingFace 门控，需 `HF_TOKEN`。`kaggle_train/`、`colab_train/` 不做预训练适配（预训练固定在 lab_train 训练服务器上）。
 
 ## 推理
 

@@ -27,9 +27,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -102,13 +104,22 @@ def _make_transform(imgsz: int, global_crop: bool):
 class PretrainDataset(Dataset):
     """Yield ``n_global`` global + ``n_local`` local crops for each manifest image."""
 
-    def __init__(self, manifest_path: Path, base_dir: Path, imgsz: int, n_local: int):
+    def __init__(
+        self,
+        manifest_path: Path,
+        base_dir: Path,
+        imgsz: int,
+        n_local: int,
+        local_imgsz: int | None = None,
+    ):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         # Paths are stored relative to the lab_train root; resolve against the
         # root passed in (portable across machines) rather than the stored abs path.
         self.paths = [base_dir / entry["path"] for entry in manifest["images"]]
         self.global_transform = _make_transform(imgsz, global_crop=True)
-        self.local_transform = _make_transform(imgsz, global_crop=False)
+        # DINO normally uses small local crops (e.g. 96/128) even when global
+        # crops are large; using the full global size for locals wastes memory.
+        self.local_transform = _make_transform(local_imgsz or imgsz, global_crop=False)
         self.n_local = n_local
         # Indices that failed to decode; retried only once per worker.
         self.bad_indices: set[int] = set()
@@ -202,6 +213,84 @@ def _backbone_embed(backbone: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return out.last_hidden_state[:, 0]  # CLS token
 
 
+class RunLogger:
+    """Write per-step metrics to CSV and a human-readable text log.
+
+    Both files are created under ``<output>/`` by default and flushed after
+    every write, so a crashed or interrupted run still leaves a usable log.
+    """
+
+    FIELDS = (
+        "step",
+        "epoch",
+        "loss",
+        "lr",
+        "momentum",
+        "elapsed_sec",
+        "steps_per_sec",
+        "samples_per_sec",
+        "gpu_mem_mb",
+    )
+
+    def __init__(
+        self,
+        output: Path,
+        log_every: int,
+        effective_batch: int,
+        dataset_size: int,
+        max_steps: int,
+        device: torch.device,
+        csv_path: Path | None = None,
+        text_path: Path | None = None,
+    ):
+        self.log_every = max(1, log_every)
+        self.effective_batch = effective_batch
+        self.dataset_size = max(1, dataset_size)
+        self.max_steps = max_steps
+        self.device = device
+        self.csv_path = csv_path or (output / "metrics.csv")
+        self.text_path = text_path or (output / "train.log")
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self.text_path.parent.mkdir(parents=True, exist_ok=True)
+        self._csv = self.csv_path.open("w", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._csv, fieldnames=self.FIELDS)
+        self._writer.writeheader()
+        self._csv.flush()
+        self._text = self.text_path.open("w", encoding="utf-8")
+
+    def log(self, step: int, loss: float, lr: float, momentum: float, elapsed: float) -> None:
+        if step % self.log_every != 0 and step != self.max_steps:
+            return
+        steps_per_sec = (step + 1) / elapsed if elapsed > 0 else 0.0
+        gpu_mem = 0.0
+        if self.device.type == "cuda" and torch.cuda.is_available():
+            gpu_mem = torch.cuda.max_memory_allocated() / (1024 ** 2)
+        row = {
+            "step": step,
+            "epoch": round(step * self.effective_batch / self.dataset_size, 4),
+            "loss": float(loss),
+            "lr": float(lr),
+            "momentum": float(momentum),
+            "elapsed_sec": round(elapsed, 2),
+            "steps_per_sec": round(steps_per_sec, 4),
+            "samples_per_sec": round(steps_per_sec * self.effective_batch, 2),
+            "gpu_mem_mb": round(gpu_mem, 1),
+        }
+        self._writer.writerow(row)
+        self._csv.flush()
+        line = (
+            f"[step {step}/{self.max_steps}] loss={loss:.4f} lr={lr:.2e} "
+            f"momentum={momentum:.4f} epoch={row['epoch']:.2f} gpu={gpu_mem:.0f}MB"
+        )
+        print(line, flush=True)
+        self._text.write(line + "\n")
+        self._text.flush()
+
+    def close(self) -> None:
+        self._csv.close()
+        self._text.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=ROOT / "dataset/pretrain/pretrain_manifest.json")
@@ -229,15 +318,37 @@ def main() -> None:
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision.")
     parser.add_argument("--save-every", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--local-imgsz", type=int, default=None,
+                        help="Local crop size; defaults to --imgsz.")
+    parser.add_argument("--grad-accum", type=int, default=1,
+                        help="Micro-batches accumulated per optimizer step.")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="DataLoader workers; use 0 for debugging or macOS.")
+    parser.add_argument("--log-every", type=int, default=10,
+                        help="Write metrics every N optimizer steps.")
+    parser.add_argument("--log-csv", type=Path, default=None,
+                        help="CSV log path; defaults to <output>/metrics.csv.")
+    parser.add_argument("--log-file", type=Path, default=None,
+                        help="Text log path; defaults to <output>/train.log.")
     args = _parse_args(parser)
+
+    if args.grad_accum < 1:
+        raise SystemExit("--grad-accum must be >= 1")
+    if args.num_workers < 0:
+        raise SystemExit("--num-workers must be >= 0")
 
     torch.manual_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    if device.type != "cuda" and args.amp:
+        print("AMP requested but CUDA is unavailable; disabling AMP.", flush=True)
+        args.amp = False
 
     if not args.manifest.exists():
         raise SystemExit(f"Manifest not found: {args.manifest}. Run prepare_pretrain_data.py first.")
 
-    dataset = PretrainDataset(args.manifest, ROOT, args.imgsz, args.local_crops)
+    dataset = PretrainDataset(
+        args.manifest, ROOT, args.imgsz, args.local_crops, args.local_imgsz
+    )
     if len(dataset) == 0:
         raise SystemExit(
             f"Manifest has no images: {args.manifest}. "
@@ -247,13 +358,23 @@ def main() -> None:
         dataset,
         batch_size=args.batch,
         shuffle=True,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == "cuda"),
         collate_fn=_collate,
         drop_last=True,
     )
-    print(f"Pretraining on {len(dataset)} unique images, batch {args.batch}, "
-          f"{args.max_steps} steps, model {args.model}")
+    if len(loader) == 0:
+        raise SystemExit(
+            f"Not enough images ({len(dataset)}) for micro-batch {args.batch} "
+            "with drop_last=True; add images or lower --batch."
+        )
+    effective_batch = args.batch * args.grad_accum
+    print(
+        f"Pretraining on {len(dataset)} unique images, micro-batch {args.batch} x "
+        f"grad-accum {args.grad_accum} (effective {effective_batch}), "
+        f"{args.max_steps} steps, imgsz {args.imgsz} / local {args.local_imgsz or args.imgsz}, "
+        f"model {args.model}"
+    )
 
     backbone = _load_backbone(args.model, args.hf_token).to(device)
     embed_dim = backbone.config.hidden_size
@@ -272,67 +393,96 @@ def main() -> None:
 
     center = torch.zeros(args.out_dim, device=device)
     args.output.mkdir(parents=True, exist_ok=True)
+    run_args = vars(args).copy()
+    run_args["effective_batch"] = effective_batch
+    run_args["dataset_size"] = len(dataset)
     (args.output / "args.json").write_text(
-        json.dumps(vars(args), indent=2, default=str), encoding="utf-8"
+        json.dumps(run_args, indent=2, default=str), encoding="utf-8"
     )
 
+    logger = RunLogger(
+        output=args.output,
+        log_every=args.log_every,
+        effective_batch=effective_batch,
+        dataset_size=len(dataset),
+        max_steps=args.max_steps,
+        device=device,
+        csv_path=args.log_csv,
+        text_path=args.log_file,
+    )
+    start_time = time.time()
+    last_loss = float("nan")
+    last_lr = args.lr
+    last_momentum = args.momentum_start
     step = 0
+    micro = 0
+    optimizer.zero_grad(set_to_none=True)
     backbone.train()
     head.train()
-    while step < args.max_steps:
-        for global_stack, local_stack in loader:
-            if step >= args.max_steps:
-                break
-            global_stack = global_stack.to(device)  # [2, B, 3, H, W]
-            if local_stack is not None:
-                local_stack = local_stack.to(device)
-
-            momentum = cosine_schedule(args.momentum_start, args.momentum_end, step, args.max_steps)
-            lr = args.lr_min + (args.lr - args.lr_min) * cosine_schedule(1.0, 0.0, step, args.max_steps)
-            if step < args.warmup_steps:
-                lr = args.lr * (step + 1) / max(1, args.warmup_steps)
-            for group in optimizer.param_groups:
-                group["lr"] = lr
-
-            with torch.no_grad():
-                teacher_outs = []
-                for i in range(global_stack.shape[0]):
-                    teacher_outs.append(teacher_head(_backbone_embed(teacher_backbone, global_stack[i])))
-                teacher_out = torch.stack(teacher_outs, dim=0)  # [2, B, K]
-
-            with torch.cuda.amp.autocast(enabled=args.amp):
-                student_outs = []
-                for i in range(global_stack.shape[0]):
-                    student_outs.append(head(_backbone_embed(backbone, global_stack[i])))
+    try:
+        while step < args.max_steps:
+            for global_stack, local_stack in loader:
+                if step >= args.max_steps:
+                    break
+                global_stack = global_stack.to(device)  # [2, B, 3, H, W]
                 if local_stack is not None:
-                    for i in range(local_stack.shape[0]):
-                        student_outs.append(head(_backbone_embed(backbone, local_stack[i])))
-                student_out = torch.stack(student_outs, dim=0)  # [2+N, B, K]
-                loss = dino_loss(student_out, teacher_out, center, args.temp_student, args.temp_teacher)
+                    local_stack = local_stack.to(device)
 
-            center = center * args.center_ema + teacher_out.detach().mean(dim=(0, 1)) * (1.0 - args.center_ema)
+                momentum = cosine_schedule(args.momentum_start, args.momentum_end, step, args.max_steps)
+                lr = args.lr_min + (args.lr - args.lr_min) * cosine_schedule(1.0, 0.0, step, args.max_steps)
+                if step < args.warmup_steps:
+                    lr = args.lr * (step + 1) / max(1, args.warmup_steps)
+                for group in optimizer.param_groups:
+                    group["lr"] = lr
 
-            optimizer.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+                with torch.no_grad():
+                    teacher_outs = []
+                    for i in range(global_stack.shape[0]):
+                        teacher_outs.append(teacher_head(_backbone_embed(teacher_backbone, global_stack[i])))
+                    teacher_out = torch.stack(teacher_outs, dim=0)  # [2, B, K]
 
-            ema_update(backbone, teacher_backbone, momentum)
-            ema_update(head, teacher_head, momentum)
+                with torch.cuda.amp.autocast(enabled=args.amp):
+                    student_outs = []
+                    for i in range(global_stack.shape[0]):
+                        student_outs.append(head(_backbone_embed(backbone, global_stack[i])))
+                    if local_stack is not None:
+                        for i in range(local_stack.shape[0]):
+                            student_outs.append(head(_backbone_embed(backbone, local_stack[i])))
+                    student_out = torch.stack(student_outs, dim=0)  # [2+N, B, K]
+                    raw_loss = dino_loss(student_out, teacher_out, center, args.temp_student, args.temp_teacher)
+                    # Scale the loss so accumulated gradients average over grad_accum micro-batches.
+                    loss = raw_loss / args.grad_accum
 
-            if step % 50 == 0:
-                print(f"[step {step}/{args.max_steps}] loss={loss.item():.4f} "
-                      f"lr={lr:.2e} momentum={momentum:.4f}", flush=True)
-            if step > 0 and step % args.save_every == 0:
-                ckpt = args.output / f"ckpt_step{step}.pt"
-                torch.save({
-                    "step": step,
-                    "backbone": teacher_backbone.state_dict(),
-                    "head": teacher_head.state_dict(),
-                    "center": center,
-                }, ckpt)
-                print(f"Saved checkpoint: {ckpt}", flush=True)
-            step += 1
+                center = center * args.center_ema + teacher_out.detach().mean(dim=(0, 1)) * (1.0 - args.center_ema)
+
+                scaler.scale(loss).backward()
+                micro += 1
+                if micro % args.grad_accum == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
+                    ema_update(backbone, teacher_backbone, momentum)
+                    ema_update(head, teacher_head, momentum)
+
+                    last_loss = raw_loss.item()
+                    last_lr = lr
+                    last_momentum = momentum
+                    logger.log(step, last_loss, lr, momentum, time.time() - start_time)
+
+                    if step > 0 and step % args.save_every == 0:
+                        ckpt = args.output / f"ckpt_step{step}.pt"
+                        torch.save({
+                            "step": step,
+                            "backbone": teacher_backbone.state_dict(),
+                            "head": teacher_head.state_dict(),
+                            "center": center,
+                        }, ckpt)
+                        print(f"Saved checkpoint: {ckpt}", flush=True)
+                    step += 1
+
+        logger.log(step, last_loss, last_lr, last_momentum, time.time() - start_time)
+    finally:
+        logger.close()
 
     final = args.output / "teacher_checkpoint.pt"
     torch.save({
@@ -343,6 +493,8 @@ def main() -> None:
         "model": args.model,
     }, final)
     print(f"Finished. Final teacher checkpoint: {final}")
+    print(f"Metrics CSV: {logger.csv_path}")
+    print(f"Text log: {logger.text_path}")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ lab_train/
 
 | 项 | 值 |
 | --- | --- |
-| GPU | NVIDIA RTX PRO 6000 Blackwell，约 96 GB 显存（97887 MiB） |
+| GPU | 原目标：NVIDIA RTX PRO 6000 Blackwell，约 96 GB；当前实际训练环境可用显存约 25 GB（配置见 3.4） |
 | 驱动 | 595.84，CUDA 版本 13.2（驱动支持的最高 CUDA 运行时） |
 | CPU | 2× Intel Xeon Gold 6530，128 线程 |
 | 内存 | 约 1 TB |
@@ -249,7 +249,8 @@ A2 的目标是在多源口内自然图像上对 DINOv3 做**域内 continue pre
 pretrain/
   prepare_pretrain_data.py   # 扫描图像目录 → SHA256 去重 → pretrain_manifest.json
   pretrain.py                # 单机 DINO continue-pretraining 训练循环
-  config.example.json        # 超参参考（model/imgsz/batch/lr/EMA 温度等）
+  config.example.json        # 通用超参参考
+  config.512-25g.json        # 25 GB 显存 + 512 分辨率推荐配置
 ```
 
 ### 1. DINOv3 版本选择分析
@@ -497,32 +498,31 @@ PY
 
 #### 3.3 冒烟测试（正式训练前必须做）
 
-GPU 冒烟（20 步，验证模型加载、前向/反向、EMA、checkpoint 保存）：
+GPU 冒烟（20 步，验证模型加载、前向/反向、EMA、梯度累积、日志和 checkpoint 保存）：
 
 ```bash
 cd lab_train
 
-python pretrain/pretrain.py \
+python -u pretrain/pretrain.py \
   --model weights/dinov3-vitb16 \
   --manifest dataset/pretrain/pretrain_manifest.json \
-  --config pretrain/config.example.json \
-  --output output/pretrain/smoke-dinov3-vitb16 \
-  --imgsz 224 \
-  --batch 8 \
-  --local-crops 2 \
+  --config pretrain/config.512-25g.json \
+  --output output/pretrain/smoke-dinov3-vitb16-512 \
   --max-steps 20 \
-  --warmup-steps 5 \
-  --save-every 1000 \
-  --device cuda:0 \
-  --amp
+  --batch 4 --grad-accum 2 \
+  --local-crops 2 --local-imgsz 128 \
+  --warmup-steps 5 --save-every 1000 --log-every 1 \
+  --device cuda:0 --amp
 ```
 
 期望日志：
 
 ```text
-Pretraining on <N> unique images, batch 8, 20 steps, model weights/dinov3-vitb16
-[step 0/20] loss=10.xxxx lr=... momentum=0.9960
-Finished. Final teacher checkpoint: output/pretrain/smoke-dinov3-vitb16/teacher_checkpoint.pt
+Pretraining on <N> unique images, micro-batch 4 x grad-accum 2 (effective 8), 20 steps, imgsz 512 / local 128, model weights/dinov3-vitb16
+[step 0/20] loss=10.xxxx lr=... momentum=0.9960 epoch=0.xx gpu=xxxxMB
+Finished. Final teacher checkpoint: output/pretrain/smoke-dinov3-vitb16-512/teacher_checkpoint.pt
+Metrics CSV: output/pretrain/smoke-dinov3-vitb16-512/metrics.csv
+Text log: output/pretrain/smoke-dinov3-vitb16-512/train.log
 ```
 
 CPU 冒烟（无 GPU 时，3 步即可）：
@@ -532,12 +532,14 @@ python pretrain/pretrain.py \
   --model weights/dinov3-vitb16 \
   --manifest dataset/pretrain/pretrain_manifest.json \
   --output output/pretrain/smoke-dinov3-vitb16-cpu \
-  --imgsz 224 --batch 2 --local-crops 2 \
+  --imgsz 128 --local-imgsz 64 --batch 2 --local-crops 1 \
   --max-steps 3 --warmup-steps 1 \
-  --save-every 1000 --device cpu
+  --save-every 1000 --log-every 1 --num-workers 0 --device cpu
 ```
 
-> `--device cuda:0` 在无 CUDA 的机器上会自动回退到 CPU；但 `--amp` 仅对 CUDA 有意义，CPU 冒烟不要加。
+> `--device cuda:0` 在无 CUDA 的机器上会自动回退到 CPU；但 `--amp` 仅对 CUDA 有意义，CPU 冒烟不要加。`--num-workers 0` 用于 macOS 或 DataLoader 排查。
+
+无论 GPU 还是 CPU 冒烟，都会自动生成 `metrics.csv` 和 `train.log`；不需要额外配置。
 
 **checkpoint 校验（两种方式）**
 
@@ -547,7 +549,7 @@ python pretrain/pretrain.py \
 python - <<'PY'
 import torch
 ckpt = torch.load(
-    "output/pretrain/smoke-dinov3-vitb16/teacher_checkpoint.pt",
+    "output/pretrain/smoke-dinov3-vitb16-512/teacher_checkpoint.pt",
     map_location="cpu", weights_only=False,
 )
 print("step:", ckpt["step"], "model:", ckpt.get("model"))
@@ -564,7 +566,7 @@ python - <<'PY'
 import torch
 from transformers import AutoModel
 ckpt = torch.load(
-    "output/pretrain/smoke-dinov3-vitb16/teacher_checkpoint.pt",
+    "output/pretrain/smoke-dinov3-vitb16-512/teacher_checkpoint.pt",
     map_location="cpu", weights_only=False,
 )
 m = AutoModel.from_pretrained("weights/dinov3-vitb16")
@@ -573,71 +575,104 @@ print("missing:", len(missing), "unexpected:", len(unexpected))
 PY
 ```
 
-#### 3.4 正式训练
+#### 3.4 正式训练（25 GB 显存 + 512 分辨率推荐）
 
-**超参建议（ViT-B/16，96 GB 显存）**
+**核心思路**：全局 512、局部 128（**不要把 local crop 也设成 512**），用 `--batch` 控制单卡显存，用 `--grad-accum` 控制有效 batch。
 
-| 参数 | 冒烟 | 正式 | 说明 |
-| --- | --- | --- | --- |
-| `--imgsz` | 224 | 224（显存富余可 448/512） | DINOv3 patch=16；224→14×14、448→28×28、512→32×32 |
-| `--batch` | 8 | 32–64 | 96 GB 可先试 64；OOM 则减半 |
-| `--local-crops` | 2 | 6 | 每张图 2 global + 6 local |
-| `--lr` | 1e-4 | 1e-4（batch 64 可 1.25e-4） | DINO 常用 `5e-4 × batch/256` |
-| `--warmup-steps` | 5 | 200（或总步数 5%） | 线性 warmup |
-| `--max-steps` | 20 | 10k–20k | 见下方步数估算 |
-| `--out-dim` | 65536 | 65536（小数据可 16384） | codebook 维度，显存/时间随其增大 |
-| `--save-every` | 1000 | 1000–2000 | 每个 checkpoint ≈400 MB |
-| `--amp` | 开（GPU） | 开（GPU） | CPU 不要开 |
-| `--seed` | 0 | 0/1/2 多种子 | 论文实验需多种子 |
+有效 batch = `batch × grad_accum`；学习率按 DINO 常用缩放 `5e-4 × effective_batch / 256`。
 
-**步数估算**：
+**推荐配置（`pretrain/config.512-25g.json`）**
 
-```text
-max_steps ≈ epochs × unique_images / batch
-```
+| 参数 | 值 | 说明 |
+| --- | --- | --- |
+| `imgsz` | 512 | 全局裁剪 512×512 |
+| `local_imgsz` | 128 | 局部裁剪 128×128（关键：不能用 512，否则显存爆炸） |
+| `local_crops` | 6 | 2 global + 6 local |
+| `batch` | 8 | 单卡 micro-batch；25 GB 下先试 8 |
+| `grad_accum` | 4 | 有效 batch = 32 |
+| `lr` | 6.25e-5 | `5e-4 × 32 / 256` |
+| `warmup_steps` | 500 | 约 3% 总步数 |
+| `max_steps` | 17500 | 约 100 epochs（5598 张、有效 batch 32） |
+| `out_dim` | 65536 | 基线；后续可做 16384 的消融 |
+| `save_every` | 2000 | 约 8 个断点 ≈ 3.2 GB |
+| `log_every` | 10 | 每 10 个优化步写一次日志 |
+| `amp` | true | 必须开 |
 
-例如 `unique=6000`、`batch=64`、目标 100 epochs：`6000 × 100 / 64 ≈ 9375` 步，取 `10000`。
-
-若数据只有约 6k 张，建议先用 `--max-steps 5000` 观察 loss/显存，再决定是否加到 10k–20k。
-
-**正式训练命令**：
+**启动命令**：
 
 ```bash
 cd lab_train
 
-python pretrain/pretrain.py \
+python -u pretrain/pretrain.py \
   --model weights/dinov3-vitb16 \
   --manifest dataset/pretrain/pretrain_manifest.json \
-  --config pretrain/config.example.json \
-  --output output/pretrain/oraldino-vitb16-224 \
-  --imgsz 224 \
-  --batch 16 \
-  --local-crops 6 \
-  --lr 1.25e-4 \
-  --warmup-steps 200 \
-  --max-steps 10000 \
-  --out-dim 65536 \
-  --save-every 1000 \
+  --config pretrain/config.512-25g.json \
+  --output output/pretrain/oraldino-vitb16-512 \
   --device cuda:0 \
-  --amp \
-  --seed 0
+  2>&1 | tee output/pretrain/oraldino-vitb16-512.stdout.log
 ```
 
-- `--config` 提供默认值，**CLI 参数优先**；例如 `config.example.json` 里 `max_steps=2000`，上面的 `--max-steps 10000` 会覆盖它。
-- 输出目录不要复用：每次正式训练用新的 `--output`，避免覆盖已有 checkpoint。
-- 多种子实验：
+- `--config` 提供默认值，CLI 仍可覆盖（例如 `--batch 4 --grad-accum 8`）。
+- `python -u` 让 stdout 不缓冲；`tee` 额外保存完整控制台输出；脚本本身还会自动写 `metrics.csv` 和 `train.log`。
+- 输出目录不要复用：每次正式训练用新的 `--output`，避免覆盖已有 checkpoint 和日志。
+
+**显存不够时（保持有效 batch 32）**：
+
+```bash
+--batch 4 --grad-accum 8
+```
+
+如果仍然 OOM，按顺序调整：
+
+1. `--local-crops 6 → 4`
+2. `--local-imgsz 128 → 96`
+3. 最后才降 `--imgsz 512 → 448`
+
+**训练量怎么定**：
+
+```text
+steps_per_epoch = ceil(unique_images / effective_batch)
+max_steps = target_epochs × steps_per_epoch
+```
+
+| unique | effective batch | steps/epoch | 50 epochs | 100 epochs | 200 epochs |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 5598 | 32 | 175 | 8,750 | 17,500 | 35,000 |
+| 5598 | 64 | 88 | 4,400 | 8,750 | 17,500 |
+| 4166 | 32 | 131 | 6,550 | 13,100 | 26,200 |
+
+建议：
+
+- 第一次正式跑先定 **100 epochs**（5598 张、有效 batch 32 → 17,500 步）；
+- 在 5k / 10k / 17.5k 步各做一次下游线性评估或检测微调，如果还在提升，再延长到 200 epochs；
+- 少于 50 epochs（< 8,750 步）只能作为流程验证，不建议写进论文。
+
+**学习率与有效 batch 的关系**：
+
+```text
+lr ≈ 5e-4 × effective_batch / 256
+```
+
+| effective batch | 建议 lr |
+| ---: | ---: |
+| 16 | 3.1e-5 |
+| 32 | 6.25e-5 |
+| 64 | 1.25e-4 |
+
+> 之前 `batch=16, lr=1.25e-4` 是有效 batch 16 对应 lr 的 4 倍；新配置 `batch 8 × grad_accum 4 = 32`，lr 用 6.25e-5。
+
+**多种子实验**：
 
 ```bash
 for seed in 0 1 2; do
-  python pretrain/pretrain.py \
+  python -u pretrain/pretrain.py \
     --model weights/dinov3-vitb16 \
     --manifest dataset/pretrain/pretrain_manifest.json \
-    --config pretrain/config.example.json \
-    --output output/pretrain/oraldino-vitb16-224-seed${seed} \
-    --imgsz 224 --batch 64 --local-crops 6 \
-    --lr 1.25e-4 --warmup-steps 200 --max-steps 10000 \
-    --out-dim 65536 --save-every 1000 \
-    --device cuda:0 --amp --seed ${seed}
+    --config pretrain/config.512-25g.json \
+    --output output/pretrain/oraldino-vitb16-512-seed${seed} \
+    --seed ${seed} \
+    --device cuda:0 \
+    2>&1 | tee output/pretrain/oraldino-vitb16-512-seed${seed}.stdout.log
 done
 ```
 
@@ -645,16 +680,26 @@ done
 
 ```bash
 nvidia-smi
-ls -lh output/pretrain/oraldino-vitb16-224/
+tail -f output/pretrain/oraldino-vitb16-512/train.log
+head -5 output/pretrain/oraldino-vitb16-512/metrics.csv
 ```
 
-> 日志每 50 步打印一次 `[step N/M] loss=... lr=... momentum=...`；若 loss 长期不降或出现 NaN，先降 `--lr`、减小 `--batch`/`--imgsz`，并确认 `--amp` 是否稳定。
+日志字段：`step,epoch,loss,lr,momentum,elapsed_sec,steps_per_sec,samples_per_sec,gpu_mem_mb`。
 
-#### 3.5 断点、续训与注意事项
+每 `log_every` 个优化步写一次；step 0、每次保存 checkpoint、最后一次都会写。崩溃时已经写入的行不会丢。
 
+> 如果 loss 长期不降或出现 NaN：先把 `--lr` 降一半，再降低 `--batch`/`--imgsz`，并确认 AMP 是否稳定。
+
+#### 3.5 断点、日志、续训与注意事项
+
+- **日志自动保存**：每次训练自动生成
+  - `output/pretrain/<run>/metrics.csv`：逐 step 指标（`step,epoch,loss,lr,momentum,elapsed_sec,steps_per_sec,samples_per_sec,gpu_mem_mb`）；
+  - `output/pretrain/<run>/train.log`：与控制台一致的文本日志。
+  两者在每次写入后 `flush`，训练崩溃或中断时已写入的部分不会丢。`--log-every 10` 表示每 10 个优化步写一次；step 0、每次保存 checkpoint、最后一次都会写。
 - `--save-every N` 会写 `ckpt_stepN.pt`（teacher backbone + head + center），最终写 `teacher_checkpoint.pt`。
 - **当前 `pretrain.py` 没有实现 `--resume`**：中断后重新启动会从 step 0 开始，`ckpt_step*.pt` 仅用于下游评估/手动恢复，不能直接续训。长训练前请确认 `--max-steps`、显存和任务时限。
-- 每个 checkpoint 约 400 MB（ViT-B/16 + 65536 维 head）；`--save-every 1000` + 10k 步 ≈ 10 个文件 ≈ 4 GB，注意磁盘。
+- 每个 checkpoint 约 400 MB（ViT-B/16 + 65536 维 head）；`--save-every 2000` + 17,500 步 ≈ 8 个文件 ≈ 3.2 GB，注意磁盘。
+- `--num-workers` 默认 4；如果 DataLoader 报错或卡住（尤其是 macOS），用 `--num-workers 0` 排查。
 - 若只需要最终骨干，可以在训练完成后只保留 `teacher_checkpoint.pt`，按需删除中间 `ckpt_step*.pt`。
 
 ### 4. 输入输出与产物
@@ -671,6 +716,8 @@ prepare_pretrain_data.py  ──► dataset/pretrain/pretrain_manifest.json
         ▼
 pretrain.py  ──► output/pretrain/<name>/
                      ├─ args.json               # 本次完整超参记录（可复现）
+                     ├─ metrics.csv             # 逐 step 指标（loss/lr/epoch/速度/显存）
+                     ├─ train.log               # 文本日志（与控制台一致）
                      ├─ ckpt_step<N>.pt         # teacher backbone+head+center 定期断点
                      └─ teacher_checkpoint.pt   # 最终 OralDINO 骨干（下游用 backbone 字段）
         │
@@ -679,6 +726,8 @@ pretrain.py  ──► output/pretrain/<name>/
 ```
 
 - **`pretrain_manifest.json`**：`unique`（去重后唯一图数）、`seen`（扫描文件数）、`images`（逐图相对路径 + SHA256 + 大小）；路径相对本包根目录，整体拷贝到服务器后依然有效。
+- **`args.json`**：包含 `effective_batch`（= `batch × grad_accum`）和 `dataset_size`，便于复现步数/epoch 换算。
+- **`metrics.csv` / `train.log`**：训练一开始就创建，逐次 flush；用于画 loss 曲线、算吞吐、检查显存。
 - **`teacher_checkpoint.pt`**：字典含 `backbone` / `head` / `center` / `step` / `model`，下游评估直接取 `backbone` 字段作为 OralDINO 初始化权重。
 
 > 数据准备（放置图像、生成/校验清单）的完整命令见 **3.2**；这里只说明产物结构。
@@ -694,6 +743,8 @@ bash setup_env.sh --pretrain          # 或已装环境后： conda activate too
 ### 6. 注意事项
 
 - **PyTorch ≥ 2.7.1**：官方 DINOv3 要求，且 Blackwell `sm_120` 依赖 cu130/cu128 wheel（本目录 `setup_env.sh` 已保证）；`transformers>=4.56.0`、`timm>=1.0.20`。
+- **25 GB 显存 + 512 分辨率**：用 `pretrain/config.512-25g.json`（global 512 / local 128 / `batch 8 × grad_accum 4 = effective 32` / lr 6.25e-5）。不要把 `local_imgsz` 设成 512；显存不够时先改 `--batch 4 --grad-accum 8`。
+- **日志**：每次训练自动写 `metrics.csv` + `train.log`；建议同时用 `python -u ... 2>&1 | tee <run>/stdout.log` 保留完整控制台输出。
 - **数据量**：当前唯一口内图约 6k 张（见根项目 A1 清单），对 65536 维 codebook 偏小，`--out-dim` 可调小、`--lr`/`--max-steps` 需按数据量校准；后续下载 COde / Oral-Diseases 后重跑数据清单并加大训练量，再评估是否升到 `vitl16`。
 - **门控与 license**：权重仅限授权用途，不得商业化/临床部署；研究用请遵守 DINOv3 License 条款。
 
@@ -707,7 +758,9 @@ bash setup_env.sh --pretrain          # 或已装环境后： conda activate too
 | `Manifest has no images` | 清单为空或路径不对 | 确认图像在 `lab_train/dataset/<name>/`，重新生成清单 |
 | `FileNotFoundError`（DataLoader 找不到图） | 清单路径与图像位置不一致 | 在 `lab_train/` 根目录运行；不要把清单和图像分开拷贝 |
 | `OSError: image file is truncated` | 数据集中有截断/损坏 JPEG | 用 `prepare_pretrain_data.py --validate-images` 重新生成清单；运行时也会自动跳过并打印警告 |
-| `CUDA out of memory` | batch/imgsz/local-crops 过大 | 依次降 `--batch`、`--imgsz`、`--local-crops`；开启 `--amp` |
+| `CUDA out of memory` | batch/imgsz/local-crops 过大 | 先降 `--batch` 并提高 `--grad-accum`（保持有效 batch），再降 `--local-crops`/`--local-imgsz`，最后降 `--imgsz`；开启 `--amp` |
+| 找不到 `metrics.csv` / `train.log` | 训练未启动或输出目录不同 | 脚本会自动写到 `<output>/`；确认 `--output` 路径和磁盘权限 |
+| DataLoader 卡住/报错 | worker 进程问题（macOS 常见） | 先用 `--num-workers 0` 排查 |
 | `pin_memory ... MPS` 警告 | CPU/MPS 环境 | 无害，可忽略 |
 | `torch.cuda.amp` FutureWarning | PyTorch 新版弃用提示 | 无害；后续可迁移到 `torch.amp` |
 | loss 为 NaN / 不下降 | lr 过大、AMP 不稳定、数据异常 | 降 lr、关 AMP 试跑、检查清单里是否有损坏图像 |

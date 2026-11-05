@@ -1,8 +1,11 @@
 {
   "model": "facebook/dinov3-vitb16-pretrain-lvd1689m",
   "imgsz": 224,
+  "local_imgsz": null,
   "local_crops": 6,
   "batch": 32,
+  "grad_accum": 1,
+  "num_workers": 4,
   "max_steps": 2000,
   "lr": 0.0001,
   "lr_min": 0.000001,
@@ -18,5 +21,6 @@
   "bottleneck": 256,
   "amp": true,
   "save_every": 500,
+  "log_every": 10,
   "seed": 0
 }

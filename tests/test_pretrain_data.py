@@ -88,6 +88,29 @@ def test_build_manifest_skips_corrupt_when_validation_enabled(tmp_path):
     assert manifest["images"][0]["path"].endswith("good.png")
 
 
+def test_run_logger_writes_metrics_and_text(tmp_path):
+    pytest.importorskip("torch")
+    pytest.importorskip("torchvision")
+    pretrain = _load_pretrain_module()
+
+    logger = pretrain.RunLogger(
+        output=tmp_path,
+        log_every=1,
+        effective_batch=4,
+        dataset_size=100,
+        max_steps=2,
+        device=pretrain.torch.device("cpu"),
+    )
+    logger.log(0, 10.0, 1e-4, 0.996, 1.0)
+    logger.log(2, 9.0, 1e-4, 0.996, 2.0)
+    logger.close()
+
+    csv_lines = (tmp_path / "metrics.csv").read_text().strip().splitlines()
+    assert len(csv_lines) == 3  # header + 2 rows
+    assert csv_lines[0].startswith("step,epoch,loss")
+    assert (tmp_path / "train.log").read_text().count("[step") == 2
+
+
 def test_pretrain_dataset_handles_truncated_jpeg(tmp_path):
     pytest.importorskip("torch")
     pytest.importorskip("torchvision")
