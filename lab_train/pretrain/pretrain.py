@@ -35,11 +35,16 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageFile
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Web-scraped dental datasets often contain JPEGs with a few missing bytes.
+# Pillow can still decode most of them; without this flag such a file raises
+# OSError and kills the whole DataLoader worker (and therefore the run).
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -105,16 +110,37 @@ class PretrainDataset(Dataset):
         self.global_transform = _make_transform(imgsz, global_crop=True)
         self.local_transform = _make_transform(imgsz, global_crop=False)
         self.n_local = n_local
+        # Indices that failed to decode; retried only once per worker.
+        self.bad_indices: set[int] = set()
 
     def __len__(self) -> int:
         return len(self.paths)
 
     def __getitem__(self, index: int):
-        with Image.open(self.paths[index]) as image:
-            rgb = image.convert("RGB")
-            global_views = [self.global_transform(rgb), self.global_transform(rgb)]
-            local_views = [self.local_transform(rgb) for _ in range(self.n_local)]
-        return {"global": global_views, "local": local_views}
+        n = len(self.paths)
+        current = index
+        last_error: Exception | None = None
+        for _ in range(n):
+            if current in self.bad_indices:
+                current = (current + 1) % n
+                continue
+            try:
+                with Image.open(self.paths[current]) as image:
+                    rgb = image.convert("RGB")
+                    global_views = [self.global_transform(rgb), self.global_transform(rgb)]
+                    local_views = [self.local_transform(rgb) for _ in range(self.n_local)]
+                return {"global": global_views, "local": local_views}
+            except (OSError, ValueError) as exc:
+                self.bad_indices.add(current)
+                last_error = exc
+                print(
+                    f"[warn] skip unreadable image: {self.paths[current]} ({exc})",
+                    flush=True,
+                )
+                current = (current + 1) % n
+        raise RuntimeError(
+            f"No readable images in manifest ({n} entries). Last error: {last_error}"
+        )
 
 
 def _collate(batch):

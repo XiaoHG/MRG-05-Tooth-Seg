@@ -241,7 +241,7 @@ args.yaml         results.csv
 
 A2 的目标是在多源口内自然图像上对 DINOv3 做**域内 continue pretraining**，得到「OralDINO」预训练骨干，供下游检测 / 氟斑牙分级复用。自监督预训练只用图像、不看标签，因此先把多源口内图像去重后喂给 DINO 训练。
 
-本节按四块展开：**① 版本选择分析 → ② 权重下载流程 → ③ 架构与训练流程 → ④ 输入输出与产物**。
+本节按以下顺序展开：**① 版本选择 → ② 权重下载与校验 → ③ 环境/数据准备、冒烟与正式训练 → ④ 输入输出与产物 → ⑤ 安装依赖 → ⑥ 注意事项与排错**。
 
 本目录内置了 `pretrain/` 包：
 
@@ -316,7 +316,65 @@ python -c "from transformers import AutoModel; m=AutoModel.from_pretrained('face
 
 - **401**：token 缺失/过期/无效 → 重新 `hf login` 或更新 `HF_TOKEN`。
 - **403 / GatedRepoError**：未接受 license 或 token 无 gated 读权限 → 回步骤①。
-- **地区限制**：DINOv3 License 对受制裁司法管辖区不开放，若所在网络无法直连，可用镜像端点 `export HF_ENDPOINT=https://hf-mirror.com`（并配合对应 token）尝试；最终能否下载以 Meta 授权为准。
+- **地区限制 / 申请被拒**：DINOv3 License 受贸易管制条款约束；`HF_ENDPOINT` 镜像只改变下载端点，**不会绕过 gated 审批**。若官方申请被拒，优先用下面的 ModelScope 镜像（HF Transformers 格式，仓库内附 `LICENSE.md`）。
+
+**⑤ 备选：ModelScope 镜像（HF 门控被拒时）**
+
+ModelScope 上的 `facebook/dinov3-vitb16-pretrain-lvd1689m` 与官方 HF 仓库同为 **Transformers 格式**（`architectures: ["DINOv3ViTModel"]`），可直接被 `AutoModel.from_pretrained` 加载。推荐用 `uv` 隔离环境下载，不污染服务器环境：
+
+```bash
+uv run --no-project --with modelscope python - <<'PY'
+from modelscope import snapshot_download
+snapshot_download(
+    "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    local_dir="weights/dinov3-vitb16",
+)
+PY
+```
+
+或使用 ModelScope CLI：
+
+```bash
+modelscope download \
+  --model facebook/dinov3-vitb16-pretrain-lvd1689m \
+  --local_dir weights/dinov3-vitb16
+```
+
+下载完成后目录应包含：
+
+```text
+weights/dinov3-vitb16/
+  config.json                # architectures: DINOv3ViTModel, hidden_size: 768
+  model.safetensors          # ≈327 MB
+  preprocessor_config.json
+  LICENSE.md                 # DINOv3 License
+```
+
+**⑥ 加载校验（必须通过后再训练）**
+
+```bash
+python - <<'PY'
+import torch
+from transformers import AutoModel
+m = AutoModel.from_pretrained("weights/dinov3-vitb16")
+print(type(m).__name__, m.config.hidden_size)
+m.eval()
+with torch.no_grad():
+    out = m(pixel_values=torch.randn(1, 3, 224, 224))
+print("forward:", out.last_hidden_state.shape)  # [1, 201, 768]
+PY
+```
+
+期望输出：
+
+```text
+DINOv3ViTModel 768
+forward: torch.Size([1, 201, 768])
+```
+
+> `201 = 1 CLS + 4 register tokens + 196 patches`；若 `hidden_size` 不是 768 或模型类型不是 `DINOv3ViTModel`，说明下载的不是 ViT-B/16，或 `transformers` 版本过旧（需 `>=4.56`）。
+>
+> 注意：`timm/vit_base_patch16_dinov3.lvd1689m` 虽然也是非门控的，但它是 **timm 格式**（`architecture: vit_base_patch16_dinov3`），不能直接传给 `transformers.AutoModel`；本项目 `pretrain.py` 用的是 Transformers 格式，请优先用上面的 ModelScope 镜像或官方 HF 文件。
 
 ### 3. 架构安排与训练流程
 
@@ -343,16 +401,261 @@ AdamW + 余弦 LR（线性 warmup）+ AMP → 更新 student → EMA 回灌 teac
 - `DINOHead`：`Linear(768→2048)→GELU→Linear(2048→256)` + l2 归一化 + weight-norm `Linear(256→out_dim=65536)`，是标准 DINO 投影头。
 - **与官方 DINOv3 的差异**：本实现**未含** iBOT（掩码预测）、KoLeo 正则、Gram anchoring 与高分辨率/多阶段调度，属「够用的 continue-pretraining 脚手架」。要复现论文级预训练，应改用官方仓库在 `resume_from_teacher_chkpt` 指到本项目的 OralDINO 断点、或在官方 `facebookresearch/dinov3` 上直接以口内图像跑 continue pretraining（该仓库同样门控、要求 `transformers>=4.56.0`、`timm>=1.0.20`、PyTorch>=2.7.1）。
 
-**启动命令**
+#### 3.1 环境准备
+
+服务器（RTX PRO 6000 Blackwell / cu130）：
 
 ```bash
-HF_TOKEN="hf_..." python pretrain/pretrain.py \
-  --config pretrain/config.example.json \
-  --manifest dataset/pretrain/pretrain_manifest.json \
-  --output output/pretrain/oraldino-vitb
+cd lab_train
+bash setup_env.sh --pretrain
+conda activate toothseg
+
+python -c "import torch, torchvision, transformers; \
+print(torch.__version__, torchvision.__version__, transformers.__version__); \
+print('cuda:', torch.cuda.is_available())"
 ```
 
-关键超参（`config.example.json` 或 CLI 覆盖）：`--model facebook/dinov3-vitb16-pretrain-lvd1689m`（或本地 `weights/dinov3-vitb16`）、`--imgsz 224`（显存富余可提 518）、`--batch 32`（96 GB 可加大）、`--lr 1e-4`、`--max-steps`。
+要求：
+
+- `torch >= 2.7.1`（Blackwell `sm_120` 需 cu130/cu128 wheel）
+- `torchvision >= 0.20`
+- `transformers >= 4.56`（DINOv3 的 `dinov3_vit` 架构支持；本包 `pyproject.toml` 已固定该下限）
+- 可选 `timm >= 1.0.20`（仅在改用 timm 格式权重时需要）
+
+本地无 GPU 的流程验证（macOS / CPU）：
+
+```bash
+pip install -e ".[pretrain]"
+
+# 或用 uv 隔离环境，避免污染现有环境：
+uv run --no-project --with torch --with torchvision --with transformers \
+  --with pillow --with numpy python pretrain/pretrain.py ...
+```
+
+> CPU 只适合跑 1–3 步冒烟；正式训练必须在 CUDA 上执行。
+
+#### 3.2 数据准备（服务器上的真实布局）
+
+`prepare_pretrain_data.py` 以 `lab_train/` 为根目录。把各数据集的图像直接放到对应目录（一个数据集一个目录，递归扫描，子目录无所谓）：
+
+```text
+lab_train/dataset/
+  OMNI_COCO/              # 直接放图像
+  AlphaDent/
+  COde-Dataset/
+  Oral-Diseases/
+  ...
+  pretrain/               # 只放生成的清单，不放图像
+```
+
+生成去重清单：
+
+```bash
+cd lab_train
+
+# 默认：自动发现 dataset/ 下所有数据集目录（除 pretrain/）
+python pretrain/prepare_pretrain_data.py --validate-images
+
+# 或只扫指定数据集（调试 / 分批训练时）：
+python pretrain/prepare_pretrain_data.py --validate-images \
+  --images dataset/OMNI_COCO dataset/AlphaDent \
+  --output dataset/pretrain/pretrain_manifest.json
+```
+
+> `--validate-images` 会完整解码每张图，把截断/损坏文件写入清单的 `corrupt` 字段并排除，避免训练时 DataLoader worker 因 `OSError: image file is truncated` 崩溃。扫描 5k–6k 张图通常只需几十秒到几分钟；不加该参数时只做 SHA256 去重，不检查图像完整性。
+
+期望输出示例：
+
+```text
+Scanned 14191 files across 7 dir(s)
+  - dataset/OMNI_COCO
+  - dataset/AlphaDent
+  ...
+Unique images after SHA256 dedup: 5759
+Manifest written to: dataset/pretrain/pretrain_manifest.json
+```
+
+若发现坏图，会额外打印 `Skipped corrupt images: N`。
+
+检查清单：
+
+```bash
+python - <<'PY'
+import json
+m = json.load(open("dataset/pretrain/pretrain_manifest.json"))
+print("base_dir:", m["base_dir"])
+print("seen:", m["seen"], "unique:", m["unique"])
+print("first:", m["images"][0]["path"])
+PY
+```
+
+- `base_dir` 应为 `lab_train/` 的绝对路径；
+- `images[].path` 应为 `dataset/<name>/...` 相对路径（可随整个 `lab_train/` 拷贝到服务器）；
+- 若 `unique == 0`，检查图像是否真的放进了 `dataset/` 下；仓库里的 `pretrain_manifest.json` 是占位文件（0 张），**必须在服务器上重新生成**；
+- 若 `corrupt` 非空，先检查这些文件；它们不会进入训练。即使不重新生成清单，`pretrain.py` 也会在运行时跳过无法解码的图并打印 `[warn] skip unreadable image`，但建议用 `--validate-images` 生成干净清单；
+- `--images` 指向 `lab_train/` 外部时，清单会写绝对路径（可用，但不可移植）。
+
+#### 3.3 冒烟测试（正式训练前必须做）
+
+GPU 冒烟（20 步，验证模型加载、前向/反向、EMA、checkpoint 保存）：
+
+```bash
+cd lab_train
+
+python pretrain/pretrain.py \
+  --model weights/dinov3-vitb16 \
+  --manifest dataset/pretrain/pretrain_manifest.json \
+  --config pretrain/config.example.json \
+  --output output/pretrain/smoke-dinov3-vitb16 \
+  --imgsz 224 \
+  --batch 8 \
+  --local-crops 2 \
+  --max-steps 20 \
+  --warmup-steps 5 \
+  --save-every 1000 \
+  --device cuda:0 \
+  --amp
+```
+
+期望日志：
+
+```text
+Pretraining on <N> unique images, batch 8, 20 steps, model weights/dinov3-vitb16
+[step 0/20] loss=10.xxxx lr=... momentum=0.9960
+Finished. Final teacher checkpoint: output/pretrain/smoke-dinov3-vitb16/teacher_checkpoint.pt
+```
+
+CPU 冒烟（无 GPU 时，3 步即可）：
+
+```bash
+python pretrain/pretrain.py \
+  --model weights/dinov3-vitb16 \
+  --manifest dataset/pretrain/pretrain_manifest.json \
+  --output output/pretrain/smoke-dinov3-vitb16-cpu \
+  --imgsz 224 --batch 2 --local-crops 2 \
+  --max-steps 3 --warmup-steps 1 \
+  --save-every 1000 --device cpu
+```
+
+> `--device cuda:0` 在无 CUDA 的机器上会自动回退到 CPU；但 `--amp` 仅对 CUDA 有意义，CPU 冒烟不要加。
+
+**checkpoint 校验（两种方式）**
+
+只检查结构：
+
+```bash
+python - <<'PY'
+import torch
+ckpt = torch.load(
+    "output/pretrain/smoke-dinov3-vitb16/teacher_checkpoint.pt",
+    map_location="cpu", weights_only=False,
+)
+print("step:", ckpt["step"], "model:", ckpt.get("model"))
+print("backbone tensors:", len(ckpt["backbone"]))
+print("head tensors:", len(ckpt["head"]))
+print("center:", tuple(ckpt["center"].shape))
+PY
+```
+
+装回 `DINOv3ViTModel`（期望 `missing 0 / unexpected 0`）：
+
+```bash
+python - <<'PY'
+import torch
+from transformers import AutoModel
+ckpt = torch.load(
+    "output/pretrain/smoke-dinov3-vitb16/teacher_checkpoint.pt",
+    map_location="cpu", weights_only=False,
+)
+m = AutoModel.from_pretrained("weights/dinov3-vitb16")
+missing, unexpected = m.load_state_dict(ckpt["backbone"], strict=False)
+print("missing:", len(missing), "unexpected:", len(unexpected))
+PY
+```
+
+#### 3.4 正式训练
+
+**超参建议（ViT-B/16，96 GB 显存）**
+
+| 参数 | 冒烟 | 正式 | 说明 |
+| --- | --- | --- | --- |
+| `--imgsz` | 224 | 224（显存富余可 448/512） | DINOv3 patch=16；224→14×14、448→28×28、512→32×32 |
+| `--batch` | 8 | 32–64 | 96 GB 可先试 64；OOM 则减半 |
+| `--local-crops` | 2 | 6 | 每张图 2 global + 6 local |
+| `--lr` | 1e-4 | 1e-4（batch 64 可 1.25e-4） | DINO 常用 `5e-4 × batch/256` |
+| `--warmup-steps` | 5 | 200（或总步数 5%） | 线性 warmup |
+| `--max-steps` | 20 | 10k–20k | 见下方步数估算 |
+| `--out-dim` | 65536 | 65536（小数据可 16384） | codebook 维度，显存/时间随其增大 |
+| `--save-every` | 1000 | 1000–2000 | 每个 checkpoint ≈400 MB |
+| `--amp` | 开（GPU） | 开（GPU） | CPU 不要开 |
+| `--seed` | 0 | 0/1/2 多种子 | 论文实验需多种子 |
+
+**步数估算**：
+
+```text
+max_steps ≈ epochs × unique_images / batch
+```
+
+例如 `unique=6000`、`batch=64`、目标 100 epochs：`6000 × 100 / 64 ≈ 9375` 步，取 `10000`。
+
+若数据只有约 6k 张，建议先用 `--max-steps 5000` 观察 loss/显存，再决定是否加到 10k–20k。
+
+**正式训练命令**：
+
+```bash
+cd lab_train
+
+python pretrain/pretrain.py \
+  --model weights/dinov3-vitb16 \
+  --manifest dataset/pretrain/pretrain_manifest.json \
+  --config pretrain/config.example.json \
+  --output output/pretrain/oraldino-vitb16-224 \
+  --imgsz 224 \
+  --batch 16 \
+  --local-crops 6 \
+  --lr 1.25e-4 \
+  --warmup-steps 200 \
+  --max-steps 10000 \
+  --out-dim 65536 \
+  --save-every 1000 \
+  --device cuda:0 \
+  --amp \
+  --seed 0
+```
+
+- `--config` 提供默认值，**CLI 参数优先**；例如 `config.example.json` 里 `max_steps=2000`，上面的 `--max-steps 10000` 会覆盖它。
+- 输出目录不要复用：每次正式训练用新的 `--output`，避免覆盖已有 checkpoint。
+- 多种子实验：
+
+```bash
+for seed in 0 1 2; do
+  python pretrain/pretrain.py \
+    --model weights/dinov3-vitb16 \
+    --manifest dataset/pretrain/pretrain_manifest.json \
+    --config pretrain/config.example.json \
+    --output output/pretrain/oraldino-vitb16-224-seed${seed} \
+    --imgsz 224 --batch 64 --local-crops 6 \
+    --lr 1.25e-4 --warmup-steps 200 --max-steps 10000 \
+    --out-dim 65536 --save-every 1000 \
+    --device cuda:0 --amp --seed ${seed}
+done
+```
+
+**训练中检查**：
+
+```bash
+nvidia-smi
+ls -lh output/pretrain/oraldino-vitb16-224/
+```
+
+> 日志每 50 步打印一次 `[step N/M] loss=... lr=... momentum=...`；若 loss 长期不降或出现 NaN，先降 `--lr`、减小 `--batch`/`--imgsz`，并确认 `--amp` 是否稳定。
+
+#### 3.5 断点、续训与注意事项
+
+- `--save-every N` 会写 `ckpt_stepN.pt`（teacher backbone + head + center），最终写 `teacher_checkpoint.pt`。
+- **当前 `pretrain.py` 没有实现 `--resume`**：中断后重新启动会从 step 0 开始，`ckpt_step*.pt` 仅用于下游评估/手动恢复，不能直接续训。长训练前请确认 `--max-steps`、显存和任务时限。
+- 每个 checkpoint 约 400 MB（ViT-B/16 + 65536 维 head）；`--save-every 1000` + 10k 步 ≈ 10 个文件 ≈ 4 GB，注意磁盘。
+- 若只需要最终骨干，可以在训练完成后只保留 `teacher_checkpoint.pt`，按需删除中间 `ckpt_step*.pt`。
 
 ### 4. 输入输出与产物
 
@@ -378,17 +681,7 @@ pretrain.py  ──► output/pretrain/<name>/
 - **`pretrain_manifest.json`**：`unique`（去重后唯一图数）、`seen`（扫描文件数）、`images`（逐图相对路径 + SHA256 + 大小）；路径相对本包根目录，整体拷贝到服务器后依然有效。
 - **`teacher_checkpoint.pt`**：字典含 `backbone` / `head` / `center` / `step` / `model`，下游评估直接取 `backbone` 字段作为 OralDINO 初始化权重。
 
-**准备数据命令**
-
-```bash
-# 默认自动发现 dataset/ 下所有数据集目录（除 pretrain/），跨目录 SHA256 去重
-python pretrain/prepare_pretrain_data.py
-
-# 也可显式指定只扫部分数据集目录：
-python pretrain/prepare_pretrain_data.py \
-  --images dataset/AlphaDent dataset/COde-Dataset dataset/OMNI_COCO \
-  --output dataset/pretrain/pretrain_manifest.json
-```
+> 数据准备（放置图像、生成/校验清单）的完整命令见 **3.2**；这里只说明产物结构。
 
 ### 5. 安装预训练依赖
 
@@ -403,3 +696,25 @@ bash setup_env.sh --pretrain          # 或已装环境后： conda activate too
 - **PyTorch ≥ 2.7.1**：官方 DINOv3 要求，且 Blackwell `sm_120` 依赖 cu130/cu128 wheel（本目录 `setup_env.sh` 已保证）；`transformers>=4.56.0`、`timm>=1.0.20`。
 - **数据量**：当前唯一口内图约 6k 张（见根项目 A1 清单），对 65536 维 codebook 偏小，`--out-dim` 可调小、`--lr`/`--max-steps` 需按数据量校准；后续下载 COde / Oral-Diseases 后重跑数据清单并加大训练量，再评估是否升到 `vitl16`。
 - **门控与 license**：权重仅限授权用途，不得商业化/临床部署；研究用请遵守 DINOv3 License 条款。
+
+### 7. 常见错误排查
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `GatedRepoError: 403` / `Access denied ... requires approval` | HF 门控未获批 | 用 ModelScope 镜像（见 2.⑤），或用机构邮箱重新申请 |
+| `401 Unauthorized` | `HF_TOKEN` 缺失/过期 | `hf login` 或更新 `HF_TOKEN` |
+| `KeyError: 'dinov3_vit'` / `Unrecognized model` | `transformers` 版本过低 | 升级到 `>=4.56` |
+| `Manifest has no images` | 清单为空或路径不对 | 确认图像在 `lab_train/dataset/<name>/`，重新生成清单 |
+| `FileNotFoundError`（DataLoader 找不到图） | 清单路径与图像位置不一致 | 在 `lab_train/` 根目录运行；不要把清单和图像分开拷贝 |
+| `OSError: image file is truncated` | 数据集中有截断/损坏 JPEG | 用 `prepare_pretrain_data.py --validate-images` 重新生成清单；运行时也会自动跳过并打印警告 |
+| `CUDA out of memory` | batch/imgsz/local-crops 过大 | 依次降 `--batch`、`--imgsz`、`--local-crops`；开启 `--amp` |
+| `pin_memory ... MPS` 警告 | CPU/MPS 环境 | 无害，可忽略 |
+| `torch.cuda.amp` FutureWarning | PyTorch 新版弃用提示 | 无害；后续可迁移到 `torch.amp` |
+| loss 为 NaN / 不下降 | lr 过大、AMP 不稳定、数据异常 | 降 lr、关 AMP 试跑、检查清单里是否有损坏图像 |
+| `non-monotonic index ... ._pack-*.idx` | macOS 在外部卷生成 AppleDouble 文件 | 把 `.git` 下 `._*` 移出后重试 Git 操作 |
+
+### 8. 权重与 License 说明
+
+- DINOv3 权重受 **DINOv3 License** 约束；协议允许在相同条款下再分发，但必须附带协议副本（`LICENSE.md`）。
+- 基于 DINO Materials 发表论文时，需在文中声明/致谢使用 DINOv3。
+- 模型权重、预训练 checkpoint（每个约 400 MB）和 `lab_train/dataset/` 已在本项目 `.gitignore` 中排除，不要提交到 Git。

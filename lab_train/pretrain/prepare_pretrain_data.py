@@ -11,6 +11,7 @@ Output:
     {
       "base_dir": "...",          # lab_train package root
       "unique": N, "seen": M,     # unique images vs total files scanned
+      "corrupt": [...],           # skipped corrupt files (only with --validate-images)
       "images": [{"path": "dataset/.../x.jpg", "sha256": "...", "size": 12345}]
     }
 
@@ -24,6 +25,8 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]  # lab_train package root
 DATASET_ROOT = ROOT / "dataset"
@@ -59,7 +62,12 @@ def _iter_images(image_dirs: list[Path]) -> list[Path]:
         if not directory.is_dir():
             continue
         for p in sorted(directory.rglob("*")):
-            if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES:
+            # ``._*`` files are macOS AppleDouble metadata, not real images.
+            if (
+                p.is_file()
+                and p.suffix.lower() in IMAGE_SUFFIXES
+                and not p.name.startswith("._")
+            ):
                 resolved = p.resolve()
                 if resolved not in seen_paths:
                     seen_paths.add(resolved)
@@ -67,21 +75,48 @@ def _iter_images(image_dirs: list[Path]) -> list[Path]:
     return out
 
 
-def build_manifest(image_dirs: list[Path], base_dir: Path) -> dict:
-    """Scan ``image_dirs``, deduplicate by SHA256, and return a manifest dict."""
+def _relative_path(path: Path, base_dir: Path) -> str:
+    try:
+        return path.resolve().relative_to(base_dir.resolve()).as_posix()
+    except ValueError:  # --images may point outside the lab_train package
+        return str(path.resolve())
+
+
+def _is_readable_image(path: Path) -> tuple[bool, str | None]:
+    """Fully decode the image so truncated/corrupt files are detected."""
+    try:
+        with Image.open(path) as image:
+            image.load()
+        return True, None
+    except Exception as exc:  # noqa: BLE001 - report whatever Pillow raises
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def build_manifest(
+    image_dirs: list[Path],
+    base_dir: Path,
+    validate_images: bool = False,
+) -> dict:
+    """Scan ``image_dirs``, deduplicate by SHA256, and return a manifest dict.
+
+    When ``validate_images`` is true every candidate is decoded first; truncated
+    or corrupt files are listed under ``corrupt`` and excluded from ``images``.
+    """
     by_hash: dict[str, dict] = {}
+    corrupt: list[dict] = []
     seen = 0
     for path in _iter_images(image_dirs):
         seen += 1
+        if validate_images:
+            ok, error = _is_readable_image(path)
+            if not ok:
+                corrupt.append({"path": _relative_path(path, base_dir), "error": error})
+                continue
         digest = _sha256(path)
         if digest in by_hash:
             continue
-        try:
-            rel = path.resolve().relative_to(base_dir.resolve()).as_posix()
-        except ValueError:
-            rel = str(path.resolve())
         by_hash[digest] = {
-            "path": rel,
+            "path": _relative_path(path, base_dir),
             "sha256": digest,
             "size": path.stat().st_size,
         }
@@ -91,6 +126,7 @@ def build_manifest(image_dirs: list[Path], base_dir: Path) -> dict:
         "base_dir": str(base_dir.resolve()),
         "unique": len(images),
         "seen": seen,
+        "corrupt": corrupt,
         "images": images,
     }
 
@@ -110,6 +146,11 @@ def main() -> None:
         type=Path,
         default=ROOT / "dataset" / "pretrain" / "pretrain_manifest.json",
     )
+    parser.add_argument(
+        "--validate-images",
+        action="store_true",
+        help="Decode every image and skip truncated/corrupt files (slower).",
+    )
     args = parser.parse_args()
 
     image_dirs = args.images or default_image_dirs()
@@ -119,18 +160,16 @@ def main() -> None:
             "Place oral images in the dataset-named folders (or pass --images explicitly)."
         )
 
-    manifest = build_manifest(image_dirs, ROOT)
+    manifest = build_manifest(image_dirs, ROOT, validate_images=args.validate_images)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"Scanned {manifest['seen']} files across {len(image_dirs)} dir(s)")
     for d in image_dirs:
-        try:
-            label = d.resolve().relative_to(ROOT)
-        except ValueError:  # --images may point outside the lab_train package
-            label = d.resolve()
-        print(f"  - {label}")
+        print(f"  - {_relative_path(d, ROOT)}")
     print(f"Unique images after SHA256 dedup: {manifest['unique']}")
+    if manifest["corrupt"]:
+        print(f"Skipped corrupt images: {len(manifest['corrupt'])}")
     print(f"Manifest written to: {args.output}")
 
 
