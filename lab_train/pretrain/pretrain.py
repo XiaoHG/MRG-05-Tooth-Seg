@@ -189,6 +189,22 @@ def dino_loss(student_out, teacher_out, center, temp_student: float, temp_teache
     return total / max(1, n_terms)
 
 
+def koLeo_loss(z: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """KoLeo regularizer: penalize each sample's nearest-neighbor distance.
+
+    Encourages the batch of CLS features to spread uniformly instead of
+    collapsing into a few directions. ``z`` is [B, D] (student global crops).
+    """
+    if z.shape[0] < 2:
+        return z.new_zeros(())
+    z = F.normalize(z, dim=-1)
+    dist = torch.cdist(z, z, p=2)
+    # masked_fill is out-of-place; fill_diagonal_ would break autograd here.
+    eye = torch.eye(dist.shape[0], dtype=torch.bool, device=dist.device)
+    min_dist = dist.masked_fill(eye, float("inf")).min(dim=1).values
+    return -torch.log(min_dist + eps).mean()
+
+
 @torch.no_grad()
 def ema_update(student: nn.Module, teacher: nn.Module, momentum: float) -> None:
     for sp, tp in zip(student.parameters(), teacher.parameters()):
@@ -311,12 +327,16 @@ def main() -> None:
     parser.add_argument("--temp-student", type=float, default=0.1)
     parser.add_argument("--temp-teacher", type=float, default=0.04)
     parser.add_argument("--center-ema", type=float, default=0.9)
+    parser.add_argument("--koleo-weight", type=float, default=0.0,
+                        help="KoLeo regularizer weight (0 disables it).")
     parser.add_argument("--out-dim", type=int, default=65536)
     parser.add_argument("--hidden-dim", type=int, default=2048)
     parser.add_argument("--bottleneck", type=int, default=256)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision.")
     parser.add_argument("--save-every", type=int, default=500)
+    parser.add_argument("--save-student", action="store_true",
+                        help="Also save the student backbone/head in checkpoints.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--local-imgsz", type=int, default=None,
                         help="Local crop size; defaults to --imgsz.")
@@ -414,6 +434,7 @@ def main() -> None:
     last_loss = float("nan")
     last_lr = args.lr
     last_momentum = args.momentum_start
+    center_accum = torch.zeros_like(center)
     step = 0
     micro = 0
     optimizer.zero_grad(set_to_none=True)
@@ -443,17 +464,27 @@ def main() -> None:
 
                 with torch.cuda.amp.autocast(enabled=args.amp):
                     student_outs = []
+                    student_feats = []
                     for i in range(global_stack.shape[0]):
-                        student_outs.append(head(_backbone_embed(backbone, global_stack[i])))
+                        feat = _backbone_embed(backbone, global_stack[i])
+                        student_feats.append(feat)
+                        student_outs.append(head(feat))
                     if local_stack is not None:
                         for i in range(local_stack.shape[0]):
                             student_outs.append(head(_backbone_embed(backbone, local_stack[i])))
                     student_out = torch.stack(student_outs, dim=0)  # [2+N, B, K]
-                    raw_loss = dino_loss(student_out, teacher_out, center, args.temp_student, args.temp_teacher)
+                    dino = dino_loss(student_out, teacher_out, center, args.temp_student, args.temp_teacher)
+                    if args.koleo_weight > 0:
+                        koleo = koLeo_loss(torch.cat(student_feats, dim=0))
+                        raw_loss = dino + args.koleo_weight * koleo
+                    else:
+                        raw_loss = dino
                     # Scale the loss so accumulated gradients average over grad_accum micro-batches.
                     loss = raw_loss / args.grad_accum
 
-                center = center * args.center_ema + teacher_out.detach().mean(dim=(0, 1)) * (1.0 - args.center_ema)
+                # Accumulate the teacher center over the optimizer's micro-batches,
+                # then update it once per optimizer step (grad-accum aware).
+                center_accum += teacher_out.detach().mean(dim=(0, 1))
 
                 scaler.scale(loss).backward()
                 micro += 1
@@ -461,6 +492,8 @@ def main() -> None:
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)
+                    center = center * args.center_ema + (center_accum / args.grad_accum) * (1.0 - args.center_ema)
+                    center_accum.zero_()
                     ema_update(backbone, teacher_backbone, momentum)
                     ema_update(head, teacher_head, momentum)
 
@@ -471,12 +504,16 @@ def main() -> None:
 
                     if step > 0 and step % args.save_every == 0:
                         ckpt = args.output / f"ckpt_step{step}.pt"
-                        torch.save({
+                        ckpt_data = {
                             "step": step,
                             "backbone": teacher_backbone.state_dict(),
                             "head": teacher_head.state_dict(),
                             "center": center,
-                        }, ckpt)
+                        }
+                        if args.save_student:
+                            ckpt_data["student_backbone"] = backbone.state_dict()
+                            ckpt_data["student_head"] = head.state_dict()
+                        torch.save(ckpt_data, ckpt)
                         print(f"Saved checkpoint: {ckpt}", flush=True)
                     step += 1
 
@@ -485,13 +522,17 @@ def main() -> None:
         logger.close()
 
     final = args.output / "teacher_checkpoint.pt"
-    torch.save({
+    final_data = {
         "step": step,
         "backbone": teacher_backbone.state_dict(),
         "head": teacher_head.state_dict(),
         "center": center,
         "model": args.model,
-    }, final)
+    }
+    if args.save_student:
+        final_data["student_backbone"] = backbone.state_dict()
+        final_data["student_head"] = head.state_dict()
+    torch.save(final_data, final)
     print(f"Finished. Final teacher checkpoint: {final}")
     print(f"Metrics CSV: {logger.csv_path}")
     print(f"Text log: {logger.text_path}")

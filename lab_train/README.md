@@ -249,8 +249,11 @@ A2 的目标是在多源口内自然图像上对 DINOv3 做**域内 continue pre
 pretrain/
   prepare_pretrain_data.py   # 扫描图像目录 → SHA256 去重 → pretrain_manifest.json
   pretrain.py                # 单机 DINO continue-pretraining 训练循环
+  eval_checkpoints.py        # 对已保存 checkpoint 做冻特征线性 probe
   config.example.json        # 通用超参参考
-  config.512-25g.json        # 25 GB 显存 + 512 分辨率推荐配置
+  config.512-25g.json        # 25 GB 显存 + 512 分辨率基础配置
+  config.512-25g-42k-p0.json # 42k 数据 + P0 配方（KoLeo/防坍缩）
+  config.512-25g-42k-control.json # 42k 数据 + 保守对照配方
 ```
 
 ### 1. DINOv3 版本选择分析
@@ -690,6 +693,82 @@ head -5 output/pretrain/oraldino-vitb16-512/metrics.csv
 
 > 如果 loss 长期不降或出现 NaN：先把 `--lr` 降一半，再降低 `--batch`/`--imgsz`，并确认 AMP 是否稳定。
 
+**42,616 张数据 + P0 配方（当前推荐）**
+
+- 数据：**42,616 张**（OMNI + AlphaDent + 新增口腔图），有效 batch 32。
+- 1 epoch = `42616 / 32 ≈ 1,332` 步。
+- 建议先跑 **30 epochs ≈ 40,000 步**；每 5,000 步保存 checkpoint 并做一次下游 probe。
+- 如果 probe 还在提升，再延长到 50 epochs（≈66,600 步）。
+
+| 配置 | out_dim | temp_teacher | center_ema | KoLeo | 用途 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `config.512-25g-42k-p0.json` | 16384 | 0.05 | 0.99 | 0.1 | **先跑这个** |
+| `config.512-25g-42k-control.json` | 65536 | 0.04 | 0.9 | 0 | 消融对照 |
+
+P0 代码改动：
+
+- 新增 `--koleo-weight`（默认 0）；P0 配置用 0.1，抑制码本/特征坍缩；
+- center EMA 改为**每个优化步更新一次**（grad-accum 感知），不再每个 micro-batch 更新；
+- 新增 `--save-student`，checkpoint 同时保存 `student_backbone` / `student_head`（约 700 MB/个）；
+- 新增 `eval_checkpoints.py`，用下游线性 probe 选 checkpoint。
+
+数据准备（先在服务器确认 42,616 张与来源分布）：
+
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+python pretrain/prepare_pretrain_data.py --validate-images
+
+python - <<'PY'
+import json, collections
+m = json.load(open("dataset/pretrain/pretrain_manifest.json"))
+print("unique:", m["unique"], "corrupt:", len(m["corrupt"]))
+print(collections.Counter(p["path"].split("/")[1] for p in m["images"]))
+PY
+```
+
+训练：
+
+```bash
+cd lab_train
+
+python -u pretrain/pretrain.py \
+  --model weights/dinov3-vitb16 \
+  --manifest dataset/pretrain/pretrain_manifest.json \
+  --config pretrain/config.512-25g-42k-p0.json \
+  --output output/pretrain/oraldino-vitb16-512-42k-p0 \
+  --device cuda:0 \
+  2>&1 | tee output/pretrain/oraldino-vitb16-512-42k-p0.stdout.log
+```
+
+- 显存：batch 8 × grad-accum 4 = 有效 32，约 11 GB（25 GB 内）。
+- 如果 GPU 吞吐偏低但显存有余，可试 `--batch 16 --grad-accum 2`（有效 32 不变，减少累积次数）；OOM 则退回 8×4。
+- checkpoint：`--save-every 5000` + `--save-student` ≈ 8 个 × 700 MB ≈ 5.6 GB；`--save-every 10000` 可减半。
+
+下游 probe（每 5,000 步的 checkpoint 都可以评）：
+
+```bash
+# 服务器上需要一份 141 张氟斑牙数据；不要把评测集放进 dataset/（会被预训练扫描）
+python pretrain/eval_checkpoints.py \
+  --run-dir output/pretrain/oraldino-vitb16-512-42k-p0 \
+  --data-root ../eval/positive \
+  --imgsz 512 --device cuda:0
+```
+
+- 默认评 teacher backbone；加 `--student` 评 student backbone。
+- 输出 `probe_results.csv`，按 QWK 自动打印最佳 checkpoint。
+- 如果 QWK 在某个 checkpoint 后连续下降，停止训练并用该 checkpoint；当前脚本不支持 resume，停止后会浪费最后一个 5k 区间。
+
+**训练量参考（42,616 张、有效 batch 32）**
+
+| epochs | steps | 说明 |
+| ---: | ---: | --- |
+| 10 | 13,320 | 快速验证 |
+| 20 | 26,640 | 最小正式量 |
+| **30** | **39,960** | **推荐首跑（40k）** |
+| 50 | 66,600 | 若 probe 仍提升再延长 |
+
+时间估算：先用 100 步测 `steps_per_sec`（写在 `metrics.csv`）。按 0.2–0.5 steps/s，40k 步约 **22–55 小时**。
+
 #### 3.5 断点、日志、续训与注意事项
 
 - **日志自动保存**：每次训练自动生成
@@ -697,9 +776,11 @@ head -5 output/pretrain/oraldino-vitb16-512/metrics.csv
   - `output/pretrain/<run>/train.log`：与控制台一致的文本日志。
   两者在每次写入后 `flush`，训练崩溃或中断时已写入的部分不会丢。`--log-every 10` 表示每 10 个优化步写一次；step 0、每次保存 checkpoint、最后一次都会写。
 - `--save-every N` 会写 `ckpt_stepN.pt`（teacher backbone + head + center），最终写 `teacher_checkpoint.pt`。
+- `--save-student` 会额外保存 `student_backbone` / `student_head`，checkpoint 约 **700 MB**（默认只存 teacher 时约 400 MB）。
 - **当前 `pretrain.py` 没有实现 `--resume`**：中断后重新启动会从 step 0 开始，`ckpt_step*.pt` 仅用于下游评估/手动恢复，不能直接续训。长训练前请确认 `--max-steps`、显存和任务时限。
-- 每个 checkpoint 约 400 MB（ViT-B/16 + 65536 维 head）；`--save-every 2000` + 17,500 步 ≈ 8 个文件 ≈ 3.2 GB，注意磁盘。
+- 42k 配置：`--save-every 5000` + `--save-student` ≈ 8 个文件 × 700 MB ≈ 5.6 GB；磁盘紧张时改 `--save-every 10000`。
 - `--num-workers` 默认 4；如果 DataLoader 报错或卡住（尤其是 macOS），用 `--num-workers 0` 排查。
+- 用 `eval_checkpoints.py` 对保存的 checkpoint 做下游 probe；结果写入 `probe_results.csv`，按 QWK 选最佳 checkpoint。
 - 若只需要最终骨干，可以在训练完成后只保留 `teacher_checkpoint.pt`，按需删除中间 `ckpt_step*.pt`。
 
 ### 4. 输入输出与产物
@@ -718,8 +799,9 @@ pretrain.py  ──► output/pretrain/<name>/
                      ├─ args.json               # 本次完整超参记录（可复现）
                      ├─ metrics.csv             # 逐 step 指标（loss/lr/epoch/速度/显存）
                      ├─ train.log               # 文本日志（与控制台一致）
-                     ├─ ckpt_step<N>.pt         # teacher backbone+head+center 定期断点
-                     └─ teacher_checkpoint.pt   # 最终 OralDINO 骨干（下游用 backbone 字段）
+                     ├─ ckpt_step<N>.pt         # teacher（+ student，若 --save-student）
+                     ├─ teacher_checkpoint.pt   # 最终 OralDINO 骨干（下游用 backbone 字段）
+                     └─ probe_results.csv       # eval_checkpoints.py 的下游 probe 结果
         │
         ▼  [下游 v16·A3]
 线性评估 / LoRA / 冻结微调 —— 检测（YOLO/RT-DETR）与氟斑牙分级
@@ -729,6 +811,8 @@ pretrain.py  ──► output/pretrain/<name>/
 - **`args.json`**：包含 `effective_batch`（= `batch × grad_accum`）和 `dataset_size`，便于复现步数/epoch 换算。
 - **`metrics.csv` / `train.log`**：训练一开始就创建，逐次 flush；用于画 loss 曲线、算吞吐、检查显存。
 - **`teacher_checkpoint.pt`**：字典含 `backbone` / `head` / `center` / `step` / `model`，下游评估直接取 `backbone` 字段作为 OralDINO 初始化权重。
+- **`--save-student`**：checkpoint 额外包含 `student_backbone` / `student_head`；可用 `eval_checkpoints.py --student` 对比 teacher/student。
+- **`probe_results.csv`**：`eval_checkpoints.py` 对每个 checkpoint 输出的 accuracy / macro-F1 / QWK。
 
 > 数据准备（放置图像、生成/校验清单）的完整命令见 **3.2**；这里只说明产物结构。
 
@@ -744,6 +828,7 @@ bash setup_env.sh --pretrain          # 或已装环境后： conda activate too
 
 - **PyTorch ≥ 2.7.1**：官方 DINOv3 要求，且 Blackwell `sm_120` 依赖 cu130/cu128 wheel（本目录 `setup_env.sh` 已保证）；`transformers>=4.56.0`、`timm>=1.0.20`。
 - **25 GB 显存 + 512 分辨率**：用 `pretrain/config.512-25g.json`（global 512 / local 128 / `batch 8 × grad_accum 4 = effective 32` / lr 6.25e-5）。不要把 `local_imgsz` 设成 512；显存不够时先改 `--batch 4 --grad-accum 8`。
+- **P0 防坍缩**：42k 配置用 `out_dim 16384`、`temp_teacher 0.05`、`center_ema 0.99`、`koleo_weight 0.1`；center EMA 每个优化步更新一次。`--save-student` 会让 checkpoint 从 ~400 MB 增到 ~700 MB。
 - **日志**：每次训练自动写 `metrics.csv` + `train.log`；建议同时用 `python -u ... 2>&1 | tee <run>/stdout.log` 保留完整控制台输出。
 - **数据量**：当前唯一口内图约 6k 张（见根项目 A1 清单），对 65536 维 codebook 偏小，`--out-dim` 可调小、`--lr`/`--max-steps` 需按数据量校准；后续下载 COde / Oral-Diseases 后重跑数据清单并加大训练量，再评估是否升到 `vitl16`。
 - **门控与 license**：权重仅限授权用途，不得商业化/临床部署；研究用请遵守 DINOv3 License 条款。

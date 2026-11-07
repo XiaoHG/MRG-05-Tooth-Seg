@@ -16,11 +16,13 @@
   "temp_student": 0.1,
   "temp_teacher": 0.04,
   "center_ema": 0.9,
+  "koleo_weight": 0.0,
   "out_dim": 65536,
   "hidden_dim": 2048,
   "bottleneck": 256,
   "amp": true,
   "save_every": 500,
+  "save_student": false,
   "log_every": 10,
   "seed": 0
 }

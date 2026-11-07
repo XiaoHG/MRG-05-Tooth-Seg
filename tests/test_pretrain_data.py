@@ -88,6 +88,22 @@ def test_build_manifest_skips_corrupt_when_validation_enabled(tmp_path):
     assert manifest["images"][0]["path"].endswith("good.png")
 
 
+def test_koleo_loss_is_finite():
+    pytest.importorskip("torch")
+    pytest.importorskip("torchvision")
+    pretrain = _load_pretrain_module()
+    torch = pretrain.torch
+
+    z = torch.randn(8, 16, requires_grad=True)
+    loss = pretrain.koLeo_loss(z)
+    assert torch.isfinite(loss)
+    loss.backward()  # guards against in-place ops that break autograd
+    assert z.grad is not None
+    # Identical features collapse to zero distance; the penalty is large but finite.
+    loss_same = pretrain.koLeo_loss(torch.ones(8, 16))
+    assert torch.isfinite(loss_same)
+
+
 def test_run_logger_writes_metrics_and_text(tmp_path):
     pytest.importorskip("torch")
     pytest.importorskip("torchvision")
