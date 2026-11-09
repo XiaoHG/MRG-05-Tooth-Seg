@@ -779,31 +779,40 @@ python pretrain/eval_checkpoints.py \
 
 **官方 DINOv3 recipe（当前推荐，替代 P0）**
 
-完整步骤见 [`official_dinov3_patch/README.md`](official_dinov3_patch/README.md)。核心命令：
+离线服务器所需内容已经放进 `lab_train/`：官方代码在 `third_party/dinov3`，
+wheels 在 `offline_wheels`，转换权重在 `weights/dinov3-vitb16-official.pth`。
+完整说明见 [`OFFLINE_DINOV3.md`](OFFLINE_DINOV3.md)。
 
 ```bash
 cd ~/MRG-05-Tooth-Seg/lab_train
 
-# 1. 数据审计（来源/重复/损坏/灰度/评测泄漏）
+# 1. 离线安装 + 打补丁 + 生成 offline_configs（自动填权重路径/data root）
+bash setup_offline_dinov3.sh \
+  --data-root ~/MRG-05-Tooth-Seg/lab_train/dataset
+
+# 2. 数据审计（来源/重复/损坏/灰度/评测泄漏）
 python pretrain/audit_pretrain_data.py \
   --data-root dataset \
   --eval-root ../dataset/positive \
   --output output/data-audit
 
-# 2. HF DINOv3 → 官方 teacher checkpoint（已验证 CLS 余弦 0.9999998）
+# 3. 100 步 smoke
+SMOKE=1 bash run_official_dinov3.sh
+
+# 4. 正式训练（默认 512）
+bash run_official_dinov3.sh
+
+# 可选：先跑 224 低显存档
+CONFIG=$PWD/offline_configs/config_dental_vitb_224.yaml bash run_official_dinov3.sh
+```
+
+如果转换权重缺失，可重新生成（官方 repo 现在是 `third_party/dinov3`）：
+
+```bash
 python pretrain/convert_hf_dinov3_to_official.py \
   --hf-model weights/dinov3-vitb16 \
   --out weights/dinov3-vitb16-official.pth \
-  --official-repo /opt/dinov3
-
-# 3. 给官方 repo 打 ImageFolder + backbone-only resume 补丁
-python pretrain/official_dinov3_patch/patch_official_dinov3.py --repo /opt/dinov3
-
-# 4. 编辑 config_dental_vitb_512.yaml 里的两个 /PATH/TO/...，然后启动
-torchrun --nproc_per_node=1 /opt/dinov3/dinov3/train/train.py \
-  --config-file ~/MRG-05-Tooth-Seg/lab_train/pretrain/official_dinov3_patch/config_dental_vitb_512.yaml \
-  --output-dir output/pretrain/official-dental-vitb-512 \
-  --no-resume
+  --official-repo third_party/dinov3
 ```
 
 关键差异（相对 P0）：

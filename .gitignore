@@ -20,3 +20,8 @@ __pycache__/
 # macOS 元数据
 .DS_Store
 ._*
+
+# lab_train 离线训练资产（体积大，随目录拷贝，不进 Git）
+lab_train/third_party/
+lab_train/offline_wheels/
+lab_train/offline_configs/

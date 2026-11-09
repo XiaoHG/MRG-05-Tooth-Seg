@@ -1,5 +1,12 @@
 # 官方 DINOv3 训练适配（iBOT + KoLeo + Gram）
 
+> **离线 lab_train 布局**：官方代码已在 `lab_train/third_party/dinov3`，
+> 离线 wheels 在 `lab_train/offline_wheels`，转换权重在
+> `lab_train/weights/dinov3-vitb16-official.pth`；一键脚本为
+> `lab_train/setup_offline_dinov3.sh` 和 `lab_train/run_official_dinov3.sh`。
+> 详见 [`../../OFFLINE_DINOV3.md`](../../OFFLINE_DINOV3.md)。本文中的 `/opt/dinov3`
+> 可替换为 `lab_train/third_party/dinov3`。
+
 本目录把官方 `facebookresearch/dinov3` 训练代码适配到牙科 42,616 张口内图，解决三件事：
 
 1. 官方代码只内置 ImageNet/ADE20K/COCO/NYU，**没有通用 ImageFolder**；

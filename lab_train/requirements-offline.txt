@@ -1,0 +1,17 @@
+omegaconf
+ftfy
+regex
+torchmetrics
+submitit
+termcolor
+scikit-learn
+scipy
+joblib
+threadpoolctl
+lightning-utilities
+cloudpickle
+wcwidth
+PyYAML
+numpy
+packaging
+typing_extensions
