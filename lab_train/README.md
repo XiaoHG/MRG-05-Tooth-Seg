@@ -248,12 +248,15 @@ A2 的目标是在多源口内自然图像上对 DINOv3 做**域内 continue pre
 ```text
 pretrain/
   prepare_pretrain_data.py   # 扫描图像目录 → SHA256 去重 → pretrain_manifest.json
-  pretrain.py                # 单机 DINO continue-pretraining 训练循环
+  audit_pretrain_data.py     # 预训练数据审计（来源/重复/损坏/灰度/评测泄漏）
+  convert_hf_dinov3_to_official.py # HF DINOv3 → 官方 DINOv3 teacher checkpoint
+  pretrain.py                # 单机 DINO 简化训练循环（P0/control 用）
   eval_checkpoints.py        # 对已保存 checkpoint 做冻特征线性 probe
   config.example.json        # 通用超参参考
   config.512-25g.json        # 25 GB 显存 + 512 分辨率基础配置
-  config.512-25g-42k-p0.json # 42k 数据 + P0 配方（KoLeo/防坍缩）
-  config.512-25g-42k-control.json # 42k 数据 + 保守对照配方
+  config.512-25g-42k-p0.json # 42k + P0 配方（已停用，仅作失败对照）
+  config.512-25g-42k-control.json # 42k + 保守对照配方
+  official_dinov3_patch/     # 官方 DINOv3 (iBOT/KoLeo/Gram) 训练适配与配置
 ```
 
 ### 1. DINOv3 版本选择分析
@@ -693,17 +696,20 @@ head -5 output/pretrain/oraldino-vitb16-512/metrics.csv
 
 > 如果 loss 长期不降或出现 NaN：先把 `--lr` 降一半，再降低 `--batch`/`--imgsz`，并确认 AMP 是否稳定。
 
-**42,616 张数据 + P0 配方（当前推荐）**
+**42,616 张数据：P0 配方（已停用）→ 官方 DINOv3 recipe（当前推荐）**
 
-- 数据：**42,616 张**（OMNI + AlphaDent + 新增口腔图），有效 batch 32。
+> **P0 42k 实测结果（2026-11-08）**：teacher 最佳 QWK **0.315**（10k），student 最佳 **0.381**（5k），公开 6 类 **0.613/0.574**；base DINOv3 为 **0.718/0.820**。P0 特征 pair cosine 仅 **0.03**，KoLeo 0.1 过强导致近正交/不稳定，**不要使用 P0 checkpoint**。
+>
+> 下一步改用官方 `facebookresearch/dinov3` 的 **iBOT + KoLeo + Gram** recipe，从 base continue-pretraining；数据审计、权重转换、ImageFolder 适配、224/512 配置见 [`official_dinov3_patch/README.md`](official_dinov3_patch/README.md)。下面的 P0 命令与训练量仅作为历史记录和消融参考。
+
+- 数据：**42,616 张**（AlphaDent + COde-Dataset + OMNI_COCO），有效 batch 32（P0 历史配置）。
 - 1 epoch = `42616 / 32 ≈ 1,332` 步。
-- 建议先跑 **30 epochs ≈ 40,000 步**；每 5,000 步保存 checkpoint 并做一次下游 probe。
-- 如果 probe 还在提升，再延长到 50 epochs（≈66,600 步）。
+- P0 历史计划：30 epochs ≈ 40,000 步；实测最佳在 5k–10k，说明早停比跑满更重要。
 
 | 配置 | out_dim | temp_teacher | center_ema | KoLeo | 用途 |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `config.512-25g-42k-p0.json` | 16384 | 0.05 | 0.99 | 0.1 | **先跑这个** |
-| `config.512-25g-42k-control.json` | 65536 | 0.04 | 0.9 | 0 | 消融对照 |
+| `config.512-25g-42k-p0.json` | 16384 | 0.05 | 0.99 | 0.1 | 历史失败，仅参考 |
+| `config.512-25g-42k-control.json` | 65536 | 0.04 | 0.9 | 0 | 旧配方消融 |
 
 P0 代码改动：
 
@@ -737,6 +743,8 @@ python -u pretrain/pretrain.py \
   --config pretrain/config.512-25g-42k-p0.json \
   --output output/pretrain/oraldino-vitb16-512-42k-p0 \
   --device cuda:0 \
+  --batch 16 \
+  --grad-accum 2 \
   2>&1 | tee output/pretrain/oraldino-vitb16-512-42k-p0.stdout.log
 ```
 
@@ -768,6 +776,44 @@ python pretrain/eval_checkpoints.py \
 | 50 | 66,600 | 若 probe 仍提升再延长 |
 
 时间估算：先用 100 步测 `steps_per_sec`（写在 `metrics.csv`）。按 0.2–0.5 steps/s，40k 步约 **22–55 小时**。
+
+**官方 DINOv3 recipe（当前推荐，替代 P0）**
+
+完整步骤见 [`official_dinov3_patch/README.md`](official_dinov3_patch/README.md)。核心命令：
+
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+
+# 1. 数据审计（来源/重复/损坏/灰度/评测泄漏）
+python pretrain/audit_pretrain_data.py \
+  --data-root dataset \
+  --eval-root ../dataset/positive \
+  --output output/data-audit
+
+# 2. HF DINOv3 → 官方 teacher checkpoint（已验证 CLS 余弦 0.9999998）
+python pretrain/convert_hf_dinov3_to_official.py \
+  --hf-model weights/dinov3-vitb16 \
+  --out weights/dinov3-vitb16-official.pth \
+  --official-repo /opt/dinov3
+
+# 3. 给官方 repo 打 ImageFolder + backbone-only resume 补丁
+python pretrain/official_dinov3_patch/patch_official_dinov3.py --repo /opt/dinov3
+
+# 4. 编辑 config_dental_vitb_512.yaml 里的两个 /PATH/TO/...，然后启动
+torchrun --nproc_per_node=1 /opt/dinov3/dinov3/train/train.py \
+  --config-file ~/MRG-05-Tooth-Seg/lab_train/pretrain/official_dinov3_patch/config_dental_vitb_512.yaml \
+  --output-dir output/pretrain/official-dental-vitb-512 \
+  --no-resume
+```
+
+关键差异（相对 P0）：
+
+- 使用官方 **iBOT + KoLeo + Gram**，不是最小 DINO；
+- 从 base DINOv3 继续预训练，不是从头；
+- 512 全局 / 128 局部，batch 8，activation checkpointing；
+- KoLeo 用 **0.05**（不是 0.1），并监控 pair cosine；
+- 15 epochs 起步，每 1k–2k 迭代看下游 probe，早停；
+- 数据审计后再训练；COde 若含 X 光，先只用 RGB 口内图。
 
 #### 3.5 断点、日志、续训与注意事项
 
