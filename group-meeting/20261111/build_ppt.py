@@ -442,11 +442,21 @@ cards = [
 for i, (t, b) in enumerate(cards):
     card(s, 0.7 + i * 4.02, 1.55, 3.78, 2.65, t, b,
          accent=[TEAL, ORANGE, NAVY][i], title_size=16, body_size=12.5)
-bullets(s, 0.7, 4.55, 11.75, 1.7, [
+bullets(s, 0.7, 4.55, 11.75, 1.2, [
     "适配策略：冻结线性 probe / LoRA / 全量微调，三种一起做可比。",
     "统一协议：同一数据划分、同一指标、多种子重复。",
     "checkpoint 选择：以下游 probe 为准，不用 training loss 选模型。",
 ], size=14)
+shp = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.7), Inches(5.95),
+                         Inches(11.75), Inches(0.78))
+shp.fill.solid()
+shp.fill.fore_color.rgb = RGBColor(0xFF, 0xF6, 0xEC)
+shp.line.color.rgb = ORANGE
+shp.shadow.inherit = False
+tx(s, 0.9, 6.02, 11.35, 0.64,
+   "术语：A3 = 论文的下游有效性评估阶段（A0 数据/基线 → A1 数据整合 → "
+   "A2 域内预训练 → A3 下游验证 → A4 撰写）；「检测 A3」= 用牙齿检测任务验证 OralDINO。",
+   size=10.5, color=NAVY, line_spacing=1.08)
 footer(s, 9)
 
 # ================================================================ Slide 10
@@ -463,7 +473,7 @@ arrow(s, 9.40, 2.72, 0.40, 0.30)
 # downstream branches
 branches = [
     ("冻结 / LoRA / 全量", "氟斑牙 4 级\n口腔疾病 6 类"),
-    ("检测 A3", "RT-DETRv2-L / YOLO26m\nmAP50 / mAP50-95"),
+    ("检测 A3（下游验证）", "RT-DETRv2-L / YOLO26m\nmAP50 / mAP50-95"),
     ("统一评估", "QWK / F1 / Acc / mAP\n固定 split + 多种子"),
 ]
 for i, (t, b) in enumerate(branches):
@@ -719,13 +729,13 @@ bullets(s, 0.7, 2.15, 6.05, 3.9, [
     "Introduction：域鸿沟、数据分散、标注瓶颈。",
     "Related Work：DINOv3、牙科基础模型、牙齿检测。",
     "Method：数据审计与去重、continue-pretraining、小 batch softmax centering、下游适配。",
-    "Experiments：linear probe、LoRA / 全量、检测 A3、消融。",
+    "Experiments：linear probe、LoRA/全量、检测 A3、消融。",
     "Discussion：P0 负结果与适用边界。",
     "Conclusion：可复用的口内视觉 backbone。",
 ], size=13)
 card(s, 7.1, 1.6, 5.35, 4.55, "时间线与目标",
      "11 月：完成预训练 + probe\n"
-     "12 月：下游适配 + 检测 A3 + 消融\n"
+     "12 月：下游适配 + 检测 A3（下游验证）+ 消融\n"
      "1 月：论文初稿\n"
      "2 月：投稿\n\n"
      "目标会议 / 期刊：待定\n"
