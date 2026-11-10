@@ -7,7 +7,7 @@
 - [x] 大纲（`OUTLINE.md`）——已审核
 - [x] 数字来源与口径（`SOURCES.md`）
 - [x] 审核意见回填
-- [x] PPT 生成（`OralDINO_group_meeting_20261111.pptx`，20 页）
+- [x] PPT 生成（`OralDINO_group_meeting_20261111.pptx`，21 页）
 - [ ] 视觉微调 / 现场排练（按需）
 
 ## 审核结论（已回填）
@@ -29,9 +29,10 @@
 
 ## 报告结构
 
-1. 创新点安排、实验设计、模型架构、论文撰写安排（Slide 3–13、19）
+1. 创新点安排、实验设计、模型架构、论文撰写安排（Slide 3–13、19–20）
 2. 实验进度报告（Slide 14–16）
 3. 下一步计划（Slide 17–18）
+4. 总结与讨论（Slide 21）
 
 ## 文件
 
@@ -39,7 +40,7 @@
 | --- | --- |
 | `OUTLINE.md` | 逐页大纲、讲稿提示、待确认事项、图表清单 |
 | `SOURCES.md` | 所有数字的来源与口径，便于审核核对 |
-| `OralDINO_group_meeting_20261111.pptx` | 最终 PPT（20 页，16:9） |
+| `OralDINO_group_meeting_20261111.pptx` | 最终 PPT（21 页，16:9） |
 | `build_ppt.py` | PPT 生成脚本；改完内容后重新运行即可 |
 | `README.md` | 本目录说明与审核状态 |
 

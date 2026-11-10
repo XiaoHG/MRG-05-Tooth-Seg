@@ -738,6 +738,40 @@ footer(s, 19)
 
 # ================================================================ Slide 20
 s = blank()
+section(s, "03 / 论文安排")
+title(s, "论文 A 摘要（草稿）")
+tx(s, 0.7, 1.18, 11.75, 0.32,
+   "OralDINO: Domain-Adaptive DINOv3 Pretraining for Intraoral Images",
+   size=12, bold=True, color=GRAY)
+card(s, 0.7, 1.62, 11.75, 3.5, "摘要",
+     "口腔疾病筛查高度依赖专业医生，智能手机口内照片为低成本、可扩展的筛查提供了新入口；"
+     "然而标注稀缺、采集条件差异大，通用视觉基础模型在口内影像上存在明显域鸿沟。"
+     "现有牙科公开数据分散、标准不一，缺少面向自监督预训练的整合资源与系统评估。\n"
+     "本文整合 AlphaDent、COde、OMNI 等多源口内图像，经 SHA256 去重与质量审计得到 "
+     "42,616 张唯一图像，以 DINOv3 ViT-B/16 为基座开展域内 continue-pretraining；"
+     "针对小 batch 下 Sinkhorn-Knopp 教师目标退化为均匀分布的问题，采用 softmax+center "
+     "的稳定训练策略，并设计 224/96 主训练与 512/128 高分辨率适应的渐进式 recipe。\n"
+     "下游在氟斑牙 5 级分级、公开口腔疾病 6 分类与牙齿检测三个任务上，系统比较冻结线性 "
+     "probe、LoRA 与全量微调，并与 base DINOv3 及 P0 配方对照，采用固定划分、多种子与 "
+     "QWK / Macro-F1 / mAP50-95 统一指标。\n"
+     "目前 Stage 1 已训练至 7,080/16,080 步，DINO/iBOT 目标稳定下降；下游定量结果待 "
+     "Stage 2 与 frozen probe 完成后补充。",
+     accent=TEAL, title_size=15, body_size=12.5)
+tx(s, 0.7, 5.22, 11.75, 0.3,
+   "关键词：口腔影像 · DINOv3 · 自监督预训练 · 域自适应 · 氟斑牙分级 · 牙齿检测",
+   size=11, color=GRAY)
+contrib = [
+    ("贡献 1", "多源口内数据整合\n42,616 张唯一图"),
+    ("贡献 2", "小 batch 稳定训练\nsoftmax + center"),
+    ("贡献 3", "三任务统一评估\n+ P0 负结果分析"),
+]
+for i, (t, b) in enumerate(contrib):
+    card(s, 0.7 + i * 4.02, 5.62, 3.78, 1.15, t, b,
+         accent=[TEAL, ORANGE, NAVY][i], title_size=12.5, body_size=10.5)
+footer(s, 20)
+
+# ================================================================ Slide 21
+s = blank()
 section(s, "总结")
 title(s, "总结与讨论")
 tx(s, 0.7, 1.5, 5.9, 0.35, "三点结论", size=15, bold=True, color=TEAL)
@@ -760,7 +794,7 @@ shp.line.fill.background()
 shp.shadow.inherit = False
 tx(s, 0.95, 5.78, 11.3, 0.45, "谢谢，欢迎讨论。",
    size=20, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
-footer(s, 20)
+footer(s, 21)
 
 prs.save(OUT)
 print(f"saved: {OUT}")
