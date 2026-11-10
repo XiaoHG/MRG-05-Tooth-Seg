@@ -932,17 +932,17 @@ bash setup_env.sh --pretrain          # 或已装环境后： conda activate too
 新配置把 K 降到 32768，均匀基线是 `ln(32768) = 10.397`。新方案有三点变化：
 
 1. `centering: "softmax"`（DINOv2 风格），不再用 Sinkhorn 的 CLS 目标；
-2. batch 提到 96（224）或 24（512），把显存从 8.8 GB 用到约 22 GB；
+2. batch 提到 320（224）或 24（512），把显存从 8.8 GB 用到约 21.6 GB；
 3. 先跑 224/96 主训练，再用低 LR 做 512/128 高分辨率适应；数据中位分辨率只有
    448×298，97.3% 的图短边 < 384，一上来就跑 512 主要是上采样。
 
-三段的总时间约 5–6 小时：
+三段的总时间约 6–7 小时（batch 320 的 224 阶段实测 1.31 s/it）：
 
 | 阶段 | 配置 | 步数 | 预计时间 |
 | --- | --- | ---: | ---: |
-| Stage 0 诊断 | 224/96, batch 96 | 2,220 | ~25 min |
-| Stage 1 主训练 | 224/96, batch 96, 60 epochs | 26,640 | ~4–5 h |
-| Stage 2 高分辨率适应 | 512/128, batch 24, resume | 5,328 | ~1 h |
+| Stage 0 诊断 | 224/96, batch 96 | 2,220 | ~24 min（实测 23:35） |
+| Stage 1 主训练 | 224/96, batch 320, 120 epochs | 16,080 | ~5.8 h |
+| Stage 2 高分辨率适应 | 512/128, batch 24, resume | 3,216 | ~30–45 min |
 
 ### 8.2 前置：同步、安装、数据去重、删除坏图
 
@@ -1046,7 +1046,7 @@ nvidia-smi -l 2
 | `dino_*_crops_loss` @ step ~100 | < 10.39（证明 softmax 路径生效） |
 | `dino_*_crops_loss` @ step 2,220 | 比 step 100 至少低 0.2 nat，最好 < 10.2 |
 | `ibot_loss` | 温度固定 0.07 后稳定 < 4.8 |
-| 显存峰值 | 20–23 GB（batch 96 @ 224） |
+| 显存峰值 | 7–8 GB（batch 96 @ 224，实测 7.9 GB） |
 
 如果 DINO loss 从第一步起就贴在 `~10.40`：
 
@@ -1071,11 +1071,12 @@ bash run_official_dinov3.sh
 | 项 | 值 |
 | --- | ---: |
 | global / local | 224 / 96 |
-| batch/GPU | 96 |
-| `OFFICIAL_EPOCH_LENGTH` | 444（`ceil(42616/96)`） |
-| epochs | 60 |
-| 总步数 | 26,640 |
-| 峰值 LR | `0.0001 × 4 × sqrt(96/1024) ≈ 1.22e-4` |
+| batch/GPU | 320 |
+| `OFFICIAL_EPOCH_LENGTH` | 134（`ceil(42616/320)`） |
+| epochs | 120 |
+| 总步数 | 16,080 |
+| 峰值 LR | `0.000054 × 4 × sqrt(320/1024) ≈ 1.21e-4` |
+| 实测显存 / 速度 | 21.6 GB / 1.31 s/it |
 | KoLeo | 0.05 |
 | DINO / iBOT prototypes | 32768 / 32768 |
 | Gram | off |
@@ -1095,8 +1096,8 @@ bash run_official_dinov3.sh
 - 不要加 `--no-resume`；`RESUME=1` 会自动去掉它。
 - `train.OFFICIAL_EPOCH_LENGTH` 必须与 Stage 1 **完全相同**，不要改成
   `ceil(42616/24)=1776`；它是 LR/cosine schedule 的单位。
-- `optim.epochs=72` → 总 31,968 步；Stage 1 结束在 26,640，剩 5,328 步。
-- 起始 LR ≈ 1.2e-5，衰减到 1e-6。
+- `optim.epochs=144` → 总 19,296 步；Stage 1 结束在 16,080，剩 3,216 步。
+- 起始 LR ≈ 1.3e-5，衰减到 1e-6。
 
 **如果 Stage 1 改过 batch / epoch length**，Stage 2 要同步：
 
@@ -1105,49 +1106,53 @@ Stage2.OFFICIAL_EPOCH_LENGTH = Stage1.OFFICIAL_EPOCH_LENGTH
 Stage2.epochs                = Stage1.epochs × 1.2
 ```
 
-例如 Stage 1 用 batch 80（epoch length 533，60 epochs = 31,980 步），
-Stage 2 就要用 `OFFICIAL_EPOCH_LENGTH=533`、`epochs=72`（总 38,376，剩 6,396 步）。
-这样 cosine 尾段仍从 60/72 ≈ 83% 的位置开始，起始 LR 仍是 ~1.2e-5。
+例如 Stage 1 因 OOM 用 batch 256（epoch length 167，120 epochs = 20,040 步），
+Stage 2 就要用 `OFFICIAL_EPOCH_LENGTH=167`、`epochs=144`（总 24,048，剩 4,008 步）。
+这样 cosine 尾段仍从 120/144 ≈ 83% 的位置开始，起始 LR 仍是 ~1.3e-5。
 
-对应命令（`epochs` 默认已经是 72，只需覆盖 epoch length）：
+对应命令（`epochs` 默认已经是 144，只需覆盖 epoch length）：
 
 ```bash
 CONFIG=$PWD/offline_configs/config_dental_vitb_512.yaml \
 OUTPUT=$PWD/output/official-dental-vitb-224 \
 RESUME=1 \
-bash run_official_dinov3.sh train.OFFICIAL_EPOCH_LENGTH=533
+bash run_official_dinov3.sh train.OFFICIAL_EPOCH_LENGTH=167
 ```
 
 ### 8.6 显存与 batch 回退
 
-| 分辨率 / local | batch | 预计峰值 | 备注 |
-| --- | ---: | ---: | --- |
-| 224 / 96 | 64 | ~16 GB | OOM 时 |
-| 224 / 96 | 80 | ~19 GB | OOM 时 |
-| **224 / 96** | **96** | **~22 GB** | 默认 |
-| 224 / 96 | 112 | ~25 GB | 可能 OOM |
-| 512 / 128 | 16 | ~16 GB | OOM 时 |
-| 512 / 128 | 20 | ~19 GB | OOM 时 |
-| **512 / 128** | **24** | **~22 GB** | 默认 |
-| 512 / 128 | 28 | ~25 GB | 可能 OOM |
+以下为服务器上 50 步探针的**实测值**（224/96，6 local crops，32768 prototypes，Gram off）：
 
-上表是按旧 run 的 `8.8 GB @ 512/128, batch 8` 线性外推的保守估计。**Stage 0 跑完后先看日志里的 `max mem`**：
+| 分辨率 / local | batch | `max mem` | 稳态 `time/it` | 备注 |
+| --- | ---: | ---: | ---: | --- |
+| 224 / 96 | 96 | 7.9 GB | 0.64 s | 诊断用 |
+| 224 / 96 | 192 | 13.8 GB | 0.79 s | OOM 时 |
+| 224 / 96 | 256 | 17.7 GB | 1.06 s | OOM 时 |
+| **224 / 96** | **320** | **21.6 GB** | **1.31 s** | **默认，约 86%** |
+| 224 / 96 | 352 | ~23.5 GB | — | 风险偏高，不建议 |
+| 512 / 128 | 24 | 未实测 | — | Stage 2 默认 |
 
-```bash
-tail -1 output/official-dental-diag-224/nan_logs/logs/log.txt
-```
+线性拟合约为 `max_mem(MB) ≈ 2070 + 61 × batch`。192 以后吞吐稳定在约 243 img/s，
+再增大 batch 不会更快，只会减少优化步数。
 
-如果 `max mem` 明显低于 22,000 MB，可以按 `新 batch ≈ 当前 batch × 22000 / max_mem`
-提高后再跑一次 Stage 0，确认峰值和 loss 轨迹；确认后再用新 batch 启动 Stage 1。
+224 阶段 OOM 时按表回退，同时改 `OFFICIAL_EPOCH_LENGTH` 和 `optim.lr`：
 
-224 阶段把 batch 降到 80 / 64 时，同时把 `OFFICIAL_EPOCH_LENGTH` 改成 533 / 666；
-可以直接在命令末尾覆盖：
+| batch | `OFFICIAL_EPOCH_LENGTH` | `optim.lr`（峰值 ≈1.2e-4） |
+| ---: | ---: | ---: |
+| 320 | 134 | 0.000054 |
+| 256 | 167 | 0.000060 |
+| 224 | 191 | 0.000064 |
+| 192 | 222 | 0.000070 |
+
+例如回退到 256：
 
 ```bash
 CONFIG=$PWD/offline_configs/config_dental_vitb_224.yaml \
-OUTPUT=$PWD/output/official-dental-vitb-224-b80 \
+OUTPUT=$PWD/output/official-dental-vitb-224-b256 \
 bash run_official_dinov3.sh \
-  train.batch_size_per_gpu=80 train.OFFICIAL_EPOCH_LENGTH=533
+  train.batch_size_per_gpu=256 \
+  train.OFFICIAL_EPOCH_LENGTH=167 \
+  optim.lr=0.00006
 ```
 
 512 阶段 OOM 时只改 batch，**不要改 `OFFICIAL_EPOCH_LENGTH`**：

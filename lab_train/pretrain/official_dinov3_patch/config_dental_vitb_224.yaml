@@ -2,9 +2,14 @@
 # Merged on top of dinov3/configs/ssl_default_config.yaml.
 #
 # Data: 42,616 unique images after SHA256 dedup (see build_dedup_view.py).
-# Memory target: ~22 GB peak at batch 96 with activation checkpointing,
-# 2 global crops of 224 and 6 local crops of 96.  Verify with nvidia-smi.
-# If OOM: batch 80 -> OFFICIAL_EPOCH_LENGTH 533; batch 64 -> 666.
+#
+# Batch calibration on the 25 GB GPU (measured, 50-step probes):
+#   batch  96 -> 7.9 GB, 0.64 s/it
+#   batch 192 -> 13.8 GB, 0.79 s/it
+#   batch 256 -> 17.7 GB, 1.06 s/it
+#   batch 320 -> 21.6 GB, 1.31 s/it  <-- default, ~86% of 25 GB
+# Marginal cost is ~61 MB per image; memory ~= 2070 + 61 * batch MB.
+# OOM fallbacks: 256 -> OFFICIAL_EPOCH_LENGTH 167; 224 -> 191; 192 -> 222.
 #
 # Replace /PATH/TO/... by running setup_offline_dinov3.sh.
 
@@ -15,8 +20,8 @@ MODEL:
 
 train:
   dataset_path: ImageFolder:root=/PATH/TO/dental_pretrain
-  batch_size_per_gpu: 96
-  OFFICIAL_EPOCH_LENGTH: 444   # ceil(42616 / 96)
+  batch_size_per_gpu: 320
+  OFFICIAL_EPOCH_LENGTH: 134   # ceil(42616 / 320)
   num_workers: 12
   checkpointing: true           # activation checkpointing
   checkpointing_full: false
@@ -56,7 +61,7 @@ teacher:
 dino:
   koleo_loss_weight: 0.05
   # 65536 prototypes were designed for batch 512+; 32768 saves ~1.5 GB of head
-  # activations at batch 96 and gives slightly sharper softmax targets.
+  # activations at batch 320 and gives slightly sharper softmax targets.
   head_n_prototypes: 32768
 
 ibot:
@@ -87,9 +92,12 @@ crops:
   local_crops_scale: [0.05, 0.32]
 
 optim:
-  epochs: 60                   # 60 x 444 = 26,640 optimizer steps
-  # sqrt_wrt_1024 scales this to 0.0001 * 4 * sqrt(96/1024) = 1.22e-4.
-  lr: 0.0001
+  # 120 epochs x 134 steps = 16,080 optimizer steps (~5.8 h at 1.31 s/it).
+  epochs: 120
+  # Keep the peak LR at ~1.2e-4 for continue-pretraining from a strong teacher:
+  # 0.000054 * 4 * sqrt(320/1024) = 1.21e-4.
+  # Other batches: 256 -> 0.000060; 224 -> 0.000064; 192 -> 0.000070.
+  lr: 0.000054
   warmup_epochs: 3
   weight_decay: 0.04
   weight_decay_end: 0.4

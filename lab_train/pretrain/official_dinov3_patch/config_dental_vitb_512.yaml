@@ -1,19 +1,19 @@
 # Stage 2: 512/128 high-resolution adaptation, resumed from stage 1.
 #
-# IMPORTANT: keep train.OFFICIAL_EPOCH_LENGTH = 444.  It is the schedule unit,
-# not "images per epoch".  Stage 1 ends at iteration 26640 (60 x 444).  With
-# epochs=72 the total is 31968, leaving 5328 steps (~3 passes at batch 24) for
-# the high-resolution phase.  The cosine tail starts at ~1.2e-5 and decays to
-# 1e-6, which is the intended "low-LR adaptation" regime.
+# IMPORTANT: keep train.OFFICIAL_EPOCH_LENGTH equal to Stage 1 (134).  It is the
+# schedule unit, not "images per epoch".  Stage 1 ends at iteration 16080
+# (120 x 134).  With epochs=144 the total is 19296, leaving 3216 steps (~1.8
+# passes at batch 24) for the high-resolution phase.  The cosine tail starts at
+# ~1.3e-5 and decays to 1e-6, which is the intended low-LR adaptation regime.
 #
 # Resume with:
 #   CONFIG=.../config_dental_vitb_512.yaml \
 #   OUTPUT=.../official-dental-vitb-224 \
 #   RESUME=1 bash run_official_dinov3.sh
 #
-# Memory: batch 24 at 512/128 with 6 local crops is ~22 GB peak, the same token
-# count as batch 96 at 224/96.  If OOM, use batch 20 (approx 19 GB) and set
-# OFFICIAL_EPOCH_LENGTH to 444 still.
+# Memory at 512/128 batch 24 with 6 local crops has not been probed yet; it is
+# expected to be below 12 GB (the old batch-8/512 run used 8.8 GB with 65536
+# prototypes).  Batch 32/40 can be tested later, but Stage 2 is short.
 
 MODEL:
   META_ARCHITECTURE: SSLMetaArch
@@ -23,7 +23,7 @@ MODEL:
 train:
   dataset_path: ImageFolder:root=/PATH/TO/dental_pretrain
   batch_size_per_gpu: 24
-  OFFICIAL_EPOCH_LENGTH: 444   # schedule unit, do not replace with 42616/24
+  OFFICIAL_EPOCH_LENGTH: 134   # must equal Stage 1, not ceil(42616/24)
   num_workers: 12
   checkpointing: true
   checkpointing_full: false
@@ -86,10 +86,11 @@ crops:
   local_crops_scale: [0.05, 0.32]
 
 optim:
-  epochs: 72                   # 72 x 444 = 31,968: 5,328 steps after stage 1
-  # sqrt_wrt_1024: 0.00025 * 4 * sqrt(24/1024) = 1.53e-4 peak.
-  # At iteration 26640 the schedule is at ~1.2e-5.
-  lr: 0.00025
+  # 144 x 134 = 19,296 total; Stage 1 ends at 16,080 -> 3,216 steps left.
+  epochs: 144
+  # sqrt_wrt_1024: 0.00029 * 4 * sqrt(24/1024) = 1.78e-4 peak.
+  # At iteration 16080 the schedule is at ~1.3e-5.
+  lr: 0.00029
   warmup_epochs: 3
   weight_decay: 0.04
   weight_decay_end: 0.4

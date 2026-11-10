@@ -1,6 +1,7 @@
 # Stage 0: 2,220-step diagnostic for the official DINOv3 recipe.
-# Same data/model/batch as config_dental_vitb_224.yaml, but all warmups are
-# disabled so the loss trajectory is visible within the first few hundred steps.
+# Same data/model as Stage 1, but batch 96 (7.9 GB measured, ~24 minutes) and
+# all warmups disabled so the loss trajectory is visible within a few hundred
+# steps.  Stage 1 itself uses batch 320 (~21.6 GB).
 #
 # Pass criterion (see README section 8):
 #   K = 32768, so a uniform teacher target gives ln(32768) = 10.397.
