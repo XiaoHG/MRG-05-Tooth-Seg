@@ -279,7 +279,7 @@ cards = [
     ("02  实验进度",
      "检测基线：8 模型 × 828 test\nP0 失败复盘与归因\n官方 DINOv3 Stage 0 / Stage 1\n当前问题与风险"),
     ("03  下一步计划",
-     "续训与 checkpoint 导出\n冻结 probe / LoRA / 检测 A3\n消融实验\n论文 A 撰写安排"),
+     "续训与 checkpoint 导出\n冻结 probe / LoRA / 检测 A3\n消融实验\n论文撰写安排"),
 ]
 for i, (t, b) in enumerate(cards):
     card(s, 0.7 + i * 4.12, 1.8, 3.82, 4.55, t, b,
@@ -352,7 +352,7 @@ rqs = [
 for i, (t, b) in enumerate(rqs):
     card(s, 0.7 + i * 4.0, 1.55, 3.75, 2.0, t, b, accent=TEAL,
          title_size=15, body_size=11.5)
-route = ["多源口内数据", "审计 / 去重", "OralDINO", "多任务评估", "论文 A"]
+route = ["多源口内数据", "审计 / 去重", "OralDINO", "多任务评估", "论文"]
 for i, label in enumerate(route):
     x = 0.75 + i * 2.42
     box(s, x, 4.55, 1.95, 0.85, label, fill=PALE if i < 4 else NAVY,
@@ -377,7 +377,7 @@ for i, (t, b) in enumerate(cards):
     card(s, 0.7 + i * 4.02, 1.65, 3.78, 3.55, t, b,
          accent=[TEAL, ORANGE, NAVY][i], title_size=17, body_size=13)
 tx(s, 0.7, 5.55, 11.75, 0.7,
-   "论文 A 主线：把“数据 → 预训练 → 下游”闭环做扎实；不在一篇论文里叠加过多模块。",
+   "论文主线：把“数据 → 预训练 → 下游”闭环做扎实；不在一篇论文里叠加过多模块。",
    size=13, bold=True, color=NAVY)
 footer(s, 6)
 
@@ -692,7 +692,7 @@ data = [
     ["2 周内", "LoRA / 全量微调对比 base", "下游适配表"],
     ["2–4 周", "检测 A3（RT-DETRv2-L / YOLO26m）", "mAP 对比"],
     ["4 周内", "消融：K / batch / KoLeo / 分辨率 / Gram", "消融表"],
-    ["1–2 月", "论文 A 初稿", "完整 draft"],
+    ["1–2 月", "论文初稿", "完整 draft"],
 ]
 table(s, 0.7, 1.55, 11.75, 4.55, data,
       col_widths=[1.1, 6.0, 4.65], font_size=12,
@@ -711,7 +711,7 @@ footer(s, 18)
 # ================================================================ Slide 19
 s = blank()
 section(s, "03 / 论文安排")
-title(s, "论文 A 撰写安排")
+title(s, "论文撰写安排")
 tx(s, 0.7, 1.55, 6.0, 0.45,
    "暂定题目：OralDINO — Domain-Adaptive DINOv3 Pretraining for Intraoral Images",
    size=13, bold=True, color=NAVY)
@@ -726,7 +726,7 @@ bullets(s, 0.7, 2.15, 6.05, 3.9, [
 card(s, 7.1, 1.6, 5.35, 4.55, "时间线与目标",
      "11 月：完成预训练 + probe\n"
      "12 月：下游适配 + 检测 A3 + 消融\n"
-     "1 月：论文 A 初稿\n"
+     "1 月：论文初稿\n"
      "2 月：投稿\n\n"
      "目标会议 / 期刊：待定\n"
      "（MICCAI / ISBI / MedIA 为候选）",
@@ -739,7 +739,7 @@ footer(s, 19)
 # ================================================================ Slide 20
 s = blank()
 section(s, "03 / 论文安排")
-title(s, "论文 A 摘要（草稿）")
+title(s, "论文摘要（草稿）")
 tx(s, 0.7, 1.18, 11.75, 0.32,
    "OralDINO: Domain-Adaptive DINOv3 Pretraining for Intraoral Images",
    size=12, bold=True, color=GRAY)
@@ -783,7 +783,7 @@ bullets(s, 0.7, 1.95, 5.9, 3.1, [
 ], size=13)
 tx(s, 6.95, 1.5, 5.5, 0.35, "三个请教问题", size=15, bold=True, color=ORANGE)
 bullets(s, 6.95, 1.95, 5.5, 3.1, [
-    "论文 A 的目标会议 / 期刊与时间线是否合适？",
+    "论文的目标会议 / 期刊与时间线是否合适？",
     "下游优先级：氟斑牙分级，还是其他口腔疾病检测？",
     "氟斑牙数据是否继续扩量 / 补标注，还是先用 141 张做方法验证？",
 ], size=13, bullet_color=ORANGE)
