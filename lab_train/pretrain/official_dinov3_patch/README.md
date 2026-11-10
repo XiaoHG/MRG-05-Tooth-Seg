@@ -207,7 +207,7 @@ torchrun --nproc_per_node=4 dinov3/train/train.py \
 
 1. 导出官方 teacher backbone 为 HF 格式（下一步实现 `export_official_teacher.py`）；
 2. 用 `eval_checkpoints.py` 做线性 probe（快速诊断）；
-3. 用 LoRA / 全量微调在氟斑牙 5 级、口腔疾病 6 类上对比 base vs OralDINO；
+3. 用 LoRA / 全量微调在氟斑牙 4 级、口腔疾病 6 类上对比 base vs OralDINO；
 4. 检测任务 A3：DINOv3 + ViT-Adapter/FPN + DETR，base vs OralDINO，frozen/LoRA/full；
 5. 固定 held-out test、多种子、同协议比较。
 

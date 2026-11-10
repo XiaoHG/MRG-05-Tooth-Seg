@@ -23,7 +23,8 @@
 | 汇报人姓名/单位/日期 | 不需要 |
 | 英文版 slides | 不需要 |
 | speaker notes | 不需要 |
-| 氟斑牙样本量口径 | 141 张（P0 评估口径） |
+| 氟斑牙任务定义 | 4 级：normal / mild / moderate / severe |
+| 氟斑牙样本量口径 | 141 张（P0 评估口径；P0 为 5 类含 doubtful） |
 | 检测基线展示 | before/after 同时展示 |
 | Stage 1 进度 | 尚未续训；按 7,080/16,080 汇报 |
 

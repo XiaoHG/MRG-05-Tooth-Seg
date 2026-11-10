@@ -43,14 +43,14 @@
 口径：
 
 - P0 = 42k、batch 8、512、KoLeo 0.1、Sinkhorn；
-- 下游 = 氟斑牙 5 级（141 张）+ 公开口腔疾病 6 分类（720 张）；
+- 下游 = 氟斑牙评估（P0 历史 5 类含 doubtful，141 张）+ 公开口腔疾病 6 分类（720 张）；当前任务定义为 4 级：normal / mild / moderate / severe。
 - 冻结 CLS + 线性 probe。
 
 大纲使用的关键数字：
 
 | 指标 | 值 | 来源 |
 | --- | ---: | --- |
-| base DINOv3 氟斑牙 QWK | 0.718 | `WHY_WORSE_THAN_BASE.md` |
+| base DINOv3 氟斑牙 QWK（5 类口径） | 0.718 | `WHY_WORSE_THAN_BASE.md` |
 | P0 teacher 最佳 QWK（10k） | 0.315 | 同上 / `lab_train/README.md` |
 | P0 student 最佳 QWK（5k） | 0.381 | 同上 |
 | base 公开 6 类 acc | 0.820 | 同上 |
@@ -103,8 +103,12 @@
 | severe | 17 |
 | **合计** | **154** |
 
-> P0 评估时使用 141 张（doubtful 22）；当前目录已增至 154 张（doubtful 35）。
-> 组会里如果引用 P0 的 QWK，需要注明“141 张评估口径”。
+> P0 评估时使用 141 张（5 类，doubtful 22）；当前目录已增至 154 张（doubtful 35）。
+> 组会里如果引用 P0 的 QWK，需要注明“5 类 / 141 张评估口径”。
+>
+> **任务定义（2026-11-10 更新）**：氟斑牙按 4 级划分：normal / mild / moderate / severe。
+> 当前目录仍保留 5 个目录（含 doubtful、medium）；4 级协议需要先确定 doubtful 的归并/排除规则，
+> 并把 medium 视为 moderate。P0 的历史 QWK 是 5 类口径，不能直接当作 4 级结果。
 
 ---
 

@@ -294,7 +294,7 @@ bullets(s, 0.7, 1.55, 7.55, 4.9, [
     "临床需求：口腔疾病筛查依赖专业医生，基层与偏远地区可及性不足。",
     "低成本入口：智能手机口内照片，但存在高光、金属、遮挡与视角变化。",
     "任务链：牙齿检测 → 实例分割 / FDI 牙位 → 龋病 / 氟斑牙分级。",
-    "标注瓶颈：氟斑牙 5 级仅 141 张；检测框标注成本高、跨库标准不一致。",
+    "标注瓶颈：氟斑牙 4 级仅 141 张；检测框标注成本高、跨库标准不一致。",
     "技术机会：自监督预训练可利用无标注口内图像，但通用 DINOv3 存在域鸿沟。",
 ], size=15)
 stats = [("42,616", "唯一预训练图"), ("141", "氟斑牙评估图"),
@@ -360,7 +360,7 @@ for i, label in enumerate(route):
     if i < len(route) - 1:
         arrow(s, x + 2.0, 4.82, 0.35, 0.30)
 tx(s, 0.75, 5.75, 11.6, 0.65,
-   "主线下游：氟斑牙 5 级分级 + 其他口腔疾病分类 + 牙齿检测 A3；所有实验共用固定 split 与统一指标。",
+   "主线下游：氟斑牙 4 级分级 + 其他口腔疾病分类 + 牙齿检测 A3；所有实验共用固定 split 与统一指标。",
    size=12.5, color=GRAY)
 footer(s, 5)
 
@@ -435,7 +435,7 @@ s = blank()
 section(s, "01 / 创新点三")
 title(s, "多任务下游评估协议")
 cards = [
-    ("氟斑牙 5 级", "141 张评估图\nQWK / Macro-F1 / Accuracy\n轻度与可疑病例是难点"),
+    ("氟斑牙 4 级", "normal / mild / moderate / severe\n141 张评估图（P0 口径）\nQWK / Macro-F1 / Accuracy\n轻度与中度边界是难点"),
     ("口腔疾病 6 类", "720 张公开数据\nAccuracy / Macro-F1\n检验通用口腔表征"),
     ("牙齿检测 A3", "828 张固定 test\nmAP50 / mAP50-95\nRT-DETRv2-L / YOLO26m"),
 ]
@@ -462,7 +462,7 @@ box(s, 6.75, 2.15, 2.55, 1.45, "OralDINO\nViT-B/16\nDINOv3", fill=NAVY,
 arrow(s, 9.40, 2.72, 0.40, 0.30)
 # downstream branches
 branches = [
-    ("冻结 / LoRA / 全量", "氟斑牙 5 级\n口腔疾病 6 类"),
+    ("冻结 / LoRA / 全量", "氟斑牙 4 级\n口腔疾病 6 类"),
     ("检测 A3", "RT-DETRv2-L / YOLO26m\nmAP50 / mAP50-95"),
     ("统一评估", "QWK / F1 / Acc / mAP\n固定 split + 多种子"),
 ]
@@ -516,15 +516,15 @@ title(s, "数据与评估协议")
 data = [
     ["用途", "数据", "规模"],
     ["预训练", "AlphaDent + COde + OMNI", "42,618 唯一图"],
-    ["氟斑牙", "5 级分级", "141 张"],
+    ["氟斑牙", "4 级分级", "141 张（P0 口径）"],
     ["口腔疾病", "公开 6 类", "720 张"],
     ["牙齿检测", "OMNI_COCO 固定 test", "828 张"],
 ]
 table(s, 0.7, 1.65, 6.1, 2.55, data,
       col_widths=[1.25, 2.85, 2.0], font_size=12.5)
 tx(s, 0.7, 4.45, 6.1, 1.4,
-   "氟斑牙 5 级（P0 评估口径）：normal 16 / doubtful 22 /\n"
-   "mild 50 / medium 36 / severe 17。",
+   "氟斑牙 4 级：normal / mild / moderate / severe；\n"
+   "P0 评估集 141 张（历史 5 类含 doubtful，4 级协议待重跑）。",
    size=11.5, color=GRAY)
 bullets(s, 7.05, 1.65, 5.55, 4.4, [
     "分类：冻结 CLS + 标准化 + Logistic Regression，5 折 × 5 次。",
@@ -598,16 +598,16 @@ section(s, "02 / 实验进度")
 title(s, "P0 失败复盘：loss 下降 ≠ 下游提升")
 data = [
     ["指标", "base", "P0 10k", "P0 final"],
-    ["氟斑牙 QWK", "0.718", "0.315", "0.143"],
+    ["氟斑牙 QWK（5 类）", "0.718", "0.315", "0.143"],
     ["公开 6 类 acc", "0.820", "0.613", "0.574"],
     ["pair cosine", "0.83", "0.039", "0.030"],
     ["grayscale 余弦", "0.959", "0.301", "0.262"],
 ]
 tbl = table(s, 0.7, 1.55, 5.45, 2.65, data,
-            col_widths=[1.55, 1.1, 1.3, 1.3], font_size=12,
+            col_widths=[1.9, 1.05, 1.2, 1.2], font_size=12,
             highlight_rows={1: RGBColor(0xE8, 0xF2, 0xF0)})
 tx(s, 0.7, 4.45, 5.45, 0.55,
-   "P0 = 42k、batch 8、512、KoLeo 0.1、Sinkhorn。",
+   "P0 = 42k、batch 8、512、KoLeo 0.1、Sinkhorn；历史 5 类含 doubtful。",
    size=11.5, color=GRAY)
 bullets(s, 6.5, 1.55, 5.95, 4.9, [
     "目标错配：DINO 优化裁剪一致性，不是类别边界。",
