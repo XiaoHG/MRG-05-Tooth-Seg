@@ -50,9 +50,44 @@ class ImageFolder(ExtendedVisionDataset):
         )
         if not self._paths:
             raise RuntimeError(f"No images found under {self._root}")
+        # Indices that failed to decode; skipped on later accesses per worker.
+        self._bad_indices: set[int] = set()
 
     def __len__(self) -> int:
         return len(self._paths)
+
+    def __getitem__(self, index: int) -> Any:
+        """Decode ``index``; if it is corrupt, try the next image.
+
+        The official ExtendedVisionDataset raises and kills the DataLoader
+        worker on any decode error. A single truncated JPEG should not abort a
+        long pretraining run, so we skip it and log the path.
+        """
+        count = len(self._paths)
+        current = index
+        last_error: Exception | None = None
+        for _ in range(count):
+            if current in self._bad_indices:
+                current = (current + 1) % count
+                continue
+            try:
+                image_data = self.get_image_data(current)
+                image = self.image_decoder(image_data).decode()
+                target = self.target_decoder(self.get_target(current)).decode()
+                if self.transforms is not None:
+                    image, target = self.transforms(image, target)
+                return image, target
+            except Exception as exc:  # noqa: BLE001 - report whatever Pillow raises
+                self._bad_indices.add(current)
+                last_error = exc
+                print(
+                    f"[warn] skip unreadable image: {self._paths[current]} ({exc})",
+                    flush=True,
+                )
+                current = (current + 1) % count
+        raise RuntimeError(
+            f"No readable images under {self._root}; last error: {last_error}"
+        )
 
     def get_image_relpath(self, index: int) -> str:
         return self._paths[index].relative_to(self._root).as_posix()

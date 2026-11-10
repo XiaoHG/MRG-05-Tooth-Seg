@@ -239,6 +239,10 @@ args.yaml         results.csv
 
 ## 七、DINOv3 域内预训练（v15 / 论文 A·A2）
 
+> **已停用（2026-11）**：本节是 v15 的 `pretrain.py` 精简实现，42k P0 实验已证伪
+> （batch 8 + Sinkhorn 导致 DINO 目标退化为均匀分布，下游 QWK 低于 base DINOv3）。
+> 当前请使用 **第八节** 的官方 DINOv3 渐进式配方；本节仅保留作历史对照。
+
 A2 的目标是在多源口内自然图像上对 DINOv3 做**域内 continue pretraining**，得到「OralDINO」预训练骨干，供下游检测 / 氟斑牙分级复用。自监督预训练只用图像、不看标签，因此先把多源口内图像去重后喂给 DINO 训练。
 
 本节按以下顺序展开：**① 版本选择 → ② 权重下载与校验 → ③ 环境/数据准备、冒烟与正式训练 → ④ 输入输出与产物 → ⑤ 安装依赖 → ⑥ 注意事项与排错**。
@@ -249,6 +253,7 @@ A2 的目标是在多源口内自然图像上对 DINOv3 做**域内 continue pre
 pretrain/
   prepare_pretrain_data.py   # 扫描图像目录 → SHA256 去重 → pretrain_manifest.json
   audit_pretrain_data.py     # 预训练数据审计（来源/重复/损坏/灰度/评测泄漏）
+  build_dedup_view.py        # 按 SHA256 建去重视图（硬链接，可删除坏图）
   convert_hf_dinov3_to_official.py # HF DINOv3 → 官方 DINOv3 teacher checkpoint
   pretrain.py                # 单机 DINO 简化训练循环（P0/control 用）
   eval_checkpoints.py        # 对已保存 checkpoint 做冻特征线性 probe
@@ -911,3 +916,278 @@ bash setup_env.sh --pretrain          # 或已装环境后： conda activate too
 - DINOv3 权重受 **DINOv3 License** 约束；协议允许在相同条款下再分发，但必须附带协议副本（`LICENSE.md`）。
 - 基于 DINO Materials 发表论文时，需在文中声明/致谢使用 DINOv3。
 - 模型权重、预训练 checkpoint（每个约 400 MB）和 `lab_train/dataset/` 已在本项目 `.gitignore` 中排除，不要提交到 Git。
+
+---
+
+## 八、官方 DINOv3 渐进式训练（v16，当前推荐）
+
+> 第七节的 `pretrain.py` P0 / control 配方已停用，仅保留作失败对照。
+> 本节使用 `third_party/dinov3` 官方代码 + `pretrain/official_dinov3_patch/` 配置。
+> 详细的离线安装与排错见 [`OFFLINE_DINOV3.md`](OFFLINE_DINOV3.md)。
+
+### 8.1 为什么必须分三段
+
+55k 步的实验已经证明：**batch 8 下 Sinkhorn-Knopp 的 DINO 目标会退化成均匀分布**
+（旧配置 K=65536，loss 恒等于 `ln(65536) ≈ 11.09`），继续加步数没有意义。
+新配置把 K 降到 32768，均匀基线是 `ln(32768) = 10.397`。新方案有三点变化：
+
+1. `centering: "softmax"`（DINOv2 风格），不再用 Sinkhorn 的 CLS 目标；
+2. batch 提到 96（224）或 24（512），把显存从 8.8 GB 用到约 22 GB；
+3. 先跑 224/96 主训练，再用低 LR 做 512/128 高分辨率适应；数据中位分辨率只有
+   448×298，97.3% 的图短边 < 384，一上来就跑 512 主要是上采样。
+
+三段的总时间约 5–6 小时：
+
+| 阶段 | 配置 | 步数 | 预计时间 |
+| --- | --- | ---: | ---: |
+| Stage 0 诊断 | 224/96, batch 96 | 2,220 | ~25 min |
+| Stage 1 主训练 | 224/96, batch 96, 60 epochs | 26,640 | ~4–5 h |
+| Stage 2 高分辨率适应 | 512/128, batch 24, resume | 5,328 | ~1 h |
+
+### 8.2 前置：同步、安装、数据去重、删除坏图
+
+**Step 1. 从 Mac 同步 `lab_train`（不要带 `dataset/` 和 `output/`）**
+
+```bash
+# Mac
+cd /Volumes/studio/gz_university/medical-report-generation/MRG-05-Tooth-Seg
+rsync -av --exclude 'dataset/' --exclude 'output/' \
+  lab_train/ cs_cs_qjh@ecs-instance-fd926d86:~/MRG-05-Tooth-Seg/lab_train/
+```
+
+**Step 2. 建去重视图，并删除 2 张截断 JPEG**
+
+服务器上的审计结果应已在 `output/data-audit/image_audit.csv`；没有就先重跑审计：
+
+```bash
+ssh cs_cs_qjh@ecs-instance-fd926d86
+cd ~/MRG-05-Tooth-Seg/lab_train
+conda activate toothseg
+
+python pretrain/audit_pretrain_data.py \
+  --data-root dataset \
+  --eval-root ../dataset/positive \
+  --output output/data-audit
+
+python pretrain/build_dedup_view.py \
+  --data-root dataset \
+  --audit output/data-audit/image_audit.csv \
+  --out dataset/pretrain_dedup \
+  --delete-corrupt
+```
+
+预期：
+
+```text
+unique_kept: 42616
+corrupt: 2
+deleted corrupt files: 2/2
+```
+
+被删除的两张是：
+
+```text
+dataset/AlphaDent/p145_M_53_002.jpg   # truncated, 75 bytes
+dataset/AlphaDent/p268_M_30_003.jpg   # truncated, 11 bytes
+```
+
+也可以先手动删除这两张，再用 `--overwrite` 重建去重视图（审计 CSV 仍需存在）：
+
+```bash
+rm -f dataset/AlphaDent/p145_M_53_002.jpg dataset/AlphaDent/p268_M_30_003.jpg
+python pretrain/build_dedup_view.py \
+  --data-root dataset \
+  --audit output/data-audit/image_audit.csv \
+  --out dataset/pretrain_dedup --overwrite
+```
+
+> 本地的 `lab_train/dataset/AlphaDent/` 是空目录，真实数据只在服务器上；
+> 因此删除动作必须在服务器执行，`--delete-corrupt` 会自动完成。
+> 不要动 `dataset/omni_coco-alphadent/` 下的同名检测数据。
+
+**Step 3. 安装/打补丁/生成配置**
+
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+bash setup_offline_dinov3.sh \
+  --data-root ~/MRG-05-Tooth-Seg/lab_train/dataset/pretrain_dedup
+```
+
+确认 softmax 已写入生成的配置（脚本也会在启动时硬性检查）：
+
+```bash
+grep -n "centering" offline_configs/*.yaml
+# 三份都应该是 centering: "softmax"
+```
+
+### 8.3 Stage 0：2,220 步诊断
+
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+CONFIG=$PWD/offline_configs/config_dental_vitb_224_diag.yaml \
+OUTPUT=$PWD/output/official-dental-diag-224 \
+bash run_official_dinov3.sh
+```
+
+另一个终端监控：
+
+```bash
+tail -f output/official-dental-diag-224/nan_logs/logs/log.txt
+nvidia-smi -l 2
+```
+
+**验收门槛**（不达标不要进入 Stage 1）：
+
+新配置的 prototype 数是 32768，均匀目标的交叉熵是 `ln(32768) = 10.397`。
+因此判据要按这个基线看：
+
+| 指标 | 期望 |
+| --- | --- |
+| `dino_*_crops_loss` @ step ~100 | < 10.39（证明 softmax 路径生效） |
+| `dino_*_crops_loss` @ step 2,220 | 比 step 100 至少低 0.2 nat，最好 < 10.2 |
+| `ibot_loss` | 温度固定 0.07 后稳定 < 4.8 |
+| 显存峰值 | 20–23 GB（batch 96 @ 224） |
+
+如果 DINO loss 从第一步起就贴在 `~10.40`：
+
+```bash
+grep -n "centering" offline_configs/config_dental_vitb_224_diag.yaml
+# 不是 softmax -> 重新运行 setup_offline_dinov3.sh
+```
+
+### 8.4 Stage 1：224/96 主训练
+
+诊断通过后启动，**使用新的 output 目录**：
+
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+CONFIG=$PWD/offline_configs/config_dental_vitb_224.yaml \
+OUTPUT=$PWD/output/official-dental-vitb-224 \
+bash run_official_dinov3.sh
+```
+
+关键参数：
+
+| 项 | 值 |
+| --- | ---: |
+| global / local | 224 / 96 |
+| batch/GPU | 96 |
+| `OFFICIAL_EPOCH_LENGTH` | 444（`ceil(42616/96)`） |
+| epochs | 60 |
+| 总步数 | 26,640 |
+| 峰值 LR | `0.0001 × 4 × sqrt(96/1024) ≈ 1.22e-4` |
+| KoLeo | 0.05 |
+| DINO / iBOT prototypes | 32768 / 32768 |
+| Gram | off |
+
+### 8.5 Stage 2：512/128 高分辨率适应（续训）
+
+Stage 1 正常结束后，用**同一个 OUTPUT** 和 `RESUME=1`：
+
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+CONFIG=$PWD/offline_configs/config_dental_vitb_512.yaml \
+OUTPUT=$PWD/output/official-dental-vitb-224 \
+RESUME=1 \
+bash run_official_dinov3.sh
+```
+
+- 不要加 `--no-resume`；`RESUME=1` 会自动去掉它。
+- `train.OFFICIAL_EPOCH_LENGTH` 必须与 Stage 1 **完全相同**，不要改成
+  `ceil(42616/24)=1776`；它是 LR/cosine schedule 的单位。
+- `optim.epochs=72` → 总 31,968 步；Stage 1 结束在 26,640，剩 5,328 步。
+- 起始 LR ≈ 1.2e-5，衰减到 1e-6。
+
+**如果 Stage 1 改过 batch / epoch length**，Stage 2 要同步：
+
+```text
+Stage2.OFFICIAL_EPOCH_LENGTH = Stage1.OFFICIAL_EPOCH_LENGTH
+Stage2.epochs                = Stage1.epochs × 1.2
+```
+
+例如 Stage 1 用 batch 80（epoch length 533，60 epochs = 31,980 步），
+Stage 2 就要用 `OFFICIAL_EPOCH_LENGTH=533`、`epochs=72`（总 38,376，剩 6,396 步）。
+这样 cosine 尾段仍从 60/72 ≈ 83% 的位置开始，起始 LR 仍是 ~1.2e-5。
+
+对应命令（`epochs` 默认已经是 72，只需覆盖 epoch length）：
+
+```bash
+CONFIG=$PWD/offline_configs/config_dental_vitb_512.yaml \
+OUTPUT=$PWD/output/official-dental-vitb-224 \
+RESUME=1 \
+bash run_official_dinov3.sh train.OFFICIAL_EPOCH_LENGTH=533
+```
+
+### 8.6 显存与 batch 回退
+
+| 分辨率 / local | batch | 预计峰值 | 备注 |
+| --- | ---: | ---: | --- |
+| 224 / 96 | 64 | ~16 GB | OOM 时 |
+| 224 / 96 | 80 | ~19 GB | OOM 时 |
+| **224 / 96** | **96** | **~22 GB** | 默认 |
+| 224 / 96 | 112 | ~25 GB | 可能 OOM |
+| 512 / 128 | 16 | ~16 GB | OOM 时 |
+| 512 / 128 | 20 | ~19 GB | OOM 时 |
+| **512 / 128** | **24** | **~22 GB** | 默认 |
+| 512 / 128 | 28 | ~25 GB | 可能 OOM |
+
+上表是按旧 run 的 `8.8 GB @ 512/128, batch 8` 线性外推的保守估计。**Stage 0 跑完后先看日志里的 `max mem`**：
+
+```bash
+tail -1 output/official-dental-diag-224/nan_logs/logs/log.txt
+```
+
+如果 `max mem` 明显低于 22,000 MB，可以按 `新 batch ≈ 当前 batch × 22000 / max_mem`
+提高后再跑一次 Stage 0，确认峰值和 loss 轨迹；确认后再用新 batch 启动 Stage 1。
+
+224 阶段把 batch 降到 80 / 64 时，同时把 `OFFICIAL_EPOCH_LENGTH` 改成 533 / 666；
+可以直接在命令末尾覆盖：
+
+```bash
+CONFIG=$PWD/offline_configs/config_dental_vitb_224.yaml \
+OUTPUT=$PWD/output/official-dental-vitb-224-b80 \
+bash run_official_dinov3.sh \
+  train.batch_size_per_gpu=80 train.OFFICIAL_EPOCH_LENGTH=533
+```
+
+512 阶段 OOM 时只改 batch，**不要改 `OFFICIAL_EPOCH_LENGTH`**：
+
+```bash
+CONFIG=$PWD/offline_configs/config_dental_vitb_512.yaml \
+OUTPUT=$PWD/output/official-dental-vitb-224 \
+RESUME=1 \
+bash run_official_dinov3.sh train.batch_size_per_gpu=20
+```
+
+### 8.7 日志与产物
+
+```text
+output/official-dental-vitb-224/
+  nan_logs/logs/log.txt      # 官方文本日志
+  training_metrics.json      # JSONL，每 10 步一行
+  stdout.log                 # torchrun 控制台
+  config.yaml                # 实际生效的完整配置
+  ckpt/<iter>/               # DCP checkpoint（约 2.5 GB/个）
+```
+
+常用检查：
+
+```bash
+tail -f output/official-dental-vitb-224/nan_logs/logs/log.txt
+grep "Training" output/official-dental-vitb-224/nan_logs/logs/log.txt | tail -3
+```
+
+如果日志里的 `data` 接近 `time`（数据加载成为瓶颈），把 `train.num_workers` 从 12
+提高到 16–24；42,616 张图都是小图，通常 12 个 worker 足够。
+
+### 8.8 不要做的事
+
+- 不要手工把 `pretrain/official_dinov3_patch/*.yaml` 直接拷进 `offline_configs/`；
+  里面有 `/PATH/TO/...` 占位符，训练时才会在 `torch.load` 处报
+  `FileNotFoundError`。统一用 `setup_offline_dinov3.sh` 生成。
+- 不要复用已有的 output 目录做新的 Stage 1；每次训练用新目录。脚本检测到
+  `ckpt/` 已有内容会直接拒绝启动；确实要覆盖时显式加 `OVERWRITE=1`。
+- 不要对 Stage 1 的目录手动 `--no-resume` 重跑；会覆盖日志和 checkpoint。
+- 不要在 Stage 2 改 `OFFICIAL_EPOCH_LENGTH`。
+- 不要再用第七节的 `pretrain.py` P0 配方跑 42k；它的 KoLeo/Sinkhorn 设置已被证伪。
+- 不要在 `ALLOW_SINKHORN=1` 下用 batch < 512 启动；DINO CLS 目标会退化。

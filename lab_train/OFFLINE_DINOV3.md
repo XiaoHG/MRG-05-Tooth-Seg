@@ -1,162 +1,238 @@
-# 离线 lab_train：官方 DINOv3 牙科预训练
+# 离线 lab_train：官方 DINOv3 牙科预训练（渐进式）
 
 服务器不能联网；所有训练所需内容已经放进 `lab_train/`：
 
 ```text
 lab_train/
-  third_party/dinov3/             # 官方 DINOv3 代码（无需 clone/联网）
-  offline_wheels/                 # Linux x86_64 / Python 3.11 离线 wheels
+  third_party/dinov3/                  # 官方 DINOv3 代码（无需 clone/联网）
+  offline_wheels/                      # Linux x86_64 / Python 3.11 离线 wheels
   requirements-offline.txt
-  weights/dinov3-vitb16-official.pth  # 已转换的官方格式权重（327 MB）
-  pretrain/official_dinov3_patch/     # ImageFolder/strict=False 补丁 + 224/512 配置
-  pretrain/audit_pretrain_data.py     # 数据审计
-  setup_offline_dinov3.sh             # 离线安装 + 打补丁 + 生成配置
-  run_official_dinov3.sh              # 启动训练
+  weights/dinov3-vitb16-official.pth   # 已转换的官方格式权重（327 MB）
+  pretrain/official_dinov3_patch/      # ImageFolder 补丁 + 3 份配置
+    config_dental_vitb_224_diag.yaml   # Stage 0：2,220 步诊断
+    config_dental_vitb_224.yaml        # Stage 1：224/96 主训练
+    config_dental_vitb_512.yaml        # Stage 2：512/128 高分辨率适应
+  pretrain/audit_pretrain_data.py      # 数据审计
+  pretrain/build_dedup_view.py         # 按 SHA256 建去重视图（硬链接）
+  setup_offline_dinov3.sh              # 离线安装 + 打补丁 + 生成配置
+  run_official_dinov3.sh               # 启动训练
 ```
 
 > 不要复制 `lab_train/dataset/` 和 `lab_train/output/` 到服务器：
-> 服务器已有 42,616 张数据和对应的 `dataset/pretrain/pretrain_manifest.json`；
+> 服务器已有 55,559 张源文件和 `dataset/pretrain/pretrain_manifest.json`。
 > 本地 `dataset/pretrain/pretrain_manifest.json` 是 0 张图的占位文件，覆盖会破坏服务器清单。
-> 本地 `output/` 是旧的 224/512 实验产物（约 5.5 GB），也不需要复制。
+> 本地 `output/` 是旧的实验产物，也不需要复制。
 
-## 1. 推荐复制方式
-
-在 Mac 上执行：
+## 0. 复制与安装
 
 ```bash
+# Mac
 rsync -av --exclude 'dataset/' --exclude 'output/' \
   lab_train/ cs_cs_qjh@ecs-instance-fd926d86:~/MRG-05-Tooth-Seg/lab_train/
-```
 
-这样会同步：
-
-- 代码、`third_party/dinov3`、`offline_wheels`、`weights`（含新的官方权重）；
-- 不会碰服务器已有的 `lab_train/dataset` 和 `lab_train/output`。
-
-如果你坚持 `cp -r` 整个目录，**先备份服务器清单**：
-
-```bash
-ssh cs_cs_qjh@ecs-instance-fd926d86 \
-  'cp ~/MRG-05-Tooth-Seg/lab_train/dataset/pretrain/pretrain_manifest.json \
-       ~/MRG-05-Tooth-Seg/lab_train/dataset/pretrain/pretrain_manifest.json.bak'
-```
-
-然后复制时手动排除 `dataset/`、`output/`。
-
-## 2. 服务器安装
-
-```bash
+# 服务器
 ssh cs_cs_qjh@ecs-instance-fd926d86
 cd ~/MRG-05-Tooth-Seg/lab_train
-
 conda activate toothseg
 python -V
 python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 
-bash setup_offline_dinov3.sh --data-root ~/MRG-05-Tooth-Seg/lab_train/dataset
+bash setup_offline_dinov3.sh --data-root ~/MRG-05-Tooth-Seg/lab_train/dataset/pretrain_dedup
 ```
+
+> 如果此时 `dataset/pretrain_dedup` 还没创建，setup 会打印
+> `WARNING: data root does not exist`，但仍会把正确路径写入配置；下一步创建即可。
+> 先建数据再 setup 也可以，顺序不影响最终配置。
 
 `setup_offline_dinov3.sh` 会：
 
 1. 离线安装 `omegaconf/ftfy/regex/torchmetrics/submitit/termcolor/scikit-learn/...`；
    `--no-deps`，**不会覆盖服务器的 CUDA torch**；
-2. 给 `third_party/dinov3` 打 ImageFolder + backbone-only resume 补丁；
+2. 给 `third_party/dinov3` 打补丁（ImageFolder、strict=False、softmax centering、
+   截断图容错、logging 修复）；
 3. 生成 `offline_configs/*.yaml`，自动填入官方权重路径和 data root；
 4. 验证 `from dinov3.data.loaders import make_dataset`。
 
-## 3. 数据审计
+## 1. 数据审计、去重、删除坏图
+
+先确认 `output/data-audit/image_audit.csv` 存在（旧服务器上已有）。没有就重跑：
 
 ```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
 python pretrain/audit_pretrain_data.py \
   --data-root dataset \
   --eval-root ../dataset/positive \
   --output output/data-audit
 ```
 
-确认：
-
-- 约 42,616 张，来源 AlphaDent / COde / OMNI；
-- 无 X 光（你说当前没有）；
-- 与下游评测集无哈希重叠（你说 test 不在 42k）；
-- 无损坏/重复。
-
-## 4. 100 步 smoke
+建去重视图（每个 SHA256 保留一份），并删除两张截断 JPEG：
 
 ```bash
-SMOKE=1 bash run_official_dinov3.sh
+python pretrain/build_dedup_view.py \
+  --data-root dataset \
+  --audit output/data-audit/image_audit.csv \
+  --out dataset/pretrain_dedup \
+  --delete-corrupt
 ```
 
-检查：
+预期输出：
+
+```text
+unique_kept: 42616
+corrupt: 2
+deleted corrupt files: 2/2
+```
+
+- `--delete-corrupt` 只删除严格解码失败的 2 张 AlphaDent 图；
+- 去重视图用硬链接，不占额外空间；
+- 之后所有配置的 `train.dataset_path` 都指向 `dataset/pretrain_dedup`。
+
+## 2. Stage 0：2,220 步诊断（约 25 分钟）
 
 ```bash
-nvidia-smi
-tail -f output/official-dental-vitb-512-smoke/log.txt
-```
-
-- 显存 < 25 GB；
-- DINO / iBOT / KoLeo / Gram loss 有限；
-- steps/s 可接受。
-
-OOM 时编辑 `offline_configs/config_dental_vitb_512.yaml`：
-
-```yaml
-train:
-  batch_size_per_gpu: 4
-  OFFICIAL_EPOCH_LENGTH: 10654   # ceil(42616/4)
-crops:
-  local_crops_number: 4
-```
-
-或先跑 224：
-
-```bash
-CONFIG=$PWD/offline_configs/config_dental_vitb_224.yaml bash run_official_dinov3.sh
-```
-
-## 5. 正式训练
-
-```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+CONFIG=$PWD/offline_configs/config_dental_vitb_224_diag.yaml \
+OUTPUT=$PWD/output/official-dental-diag-224 \
 bash run_official_dinov3.sh
 ```
 
-默认：
+启动前脚本会硬性检查 `centering: softmax`，否则拒绝启动。
 
-```text
-config = offline_configs/config_dental_vitb_512.yaml
-output = output/official-dental-vitb-512
-nproc  = 1
-```
-
-多卡：
+监控：
 
 ```bash
-NPROC=4 bash run_official_dinov3.sh
-# 同时把 config 的 OFFICIAL_EPOCH_LENGTH 改为 ceil(42616 / (8 * 4)) = 1332
+tail -f output/official-dental-diag-224/nan_logs/logs/log.txt
+nvidia-smi -l 2
 ```
 
-`run_official_dinov3.sh` 默认 `--no-resume`；续训时编辑脚本去掉该参数，或直接跑官方命令。
+**验收门槛**（不达标就停，不要进入 Stage 1）：
 
-## 6. 关键参数
+新配置 K=32768，均匀目标的交叉熵是 `ln(32768) = 10.397`。
 
-| 项 | 512 | 224 |
-| --- | ---: | ---: |
-| global / local | 512 / 128 | 224 / 96 |
-| batch/GPU | 8 | 16 |
-| `OFFICIAL_EPOCH_LENGTH` | 5327 | 2664 |
-| epochs | 15 | 15 |
-| KoLeo | 0.05 | 0.05 |
-| iBOT | 1.0 | 1.0 |
-| Gram | on（EMA teacher） | on（EMA teacher） |
-| activation checkpointing | on | on |
+| 指标 | 期望 |
+| --- | --- |
+| `dino_*_crops_loss` @ step ~100 | < 10.39（证明 softmax 路径生效） |
+| `dino_*_crops_loss` @ step 2,220 | 比 step 100 至少低 0.2 nat，最好 < 10.2 |
+| `ibot_loss` | 温度固定 0.07 后稳定 < 4.8 |
+| 显存峰值 | 20–23 GB（batch 96 @ 224） |
 
-- KoLeo 官方 0.1；单卡 batch 8 用 0.05，避免 P0 的近正交特征。
-- 最佳 checkpoint 可能早于 final；每 1k–2k 迭代看下游 probe。
-- 官方训练保存 DCP checkpoint（`output/.../ckpt/<iter>/`）；导出成 HF backbone 后才能用
-  `eval_checkpoints.py` 做线性 probe。
+如果 DINO loss 从第一步起就贴在 `~10.40`，说明 softmax 没生效或配置没被重新生成。
 
-## 7. 已验证
+## 3. Stage 1：224/96 主训练（60 epochs，约 4–5 小时）
 
-- HF → 官方权重：175 个 ViT 张量，CLS 余弦 **0.9999998**；
-- 训练 checkpoint 176 个张量（含 `backbone.*` 和 rope buffer）；
-- ImageFolder + strict=False 补丁已在官方 repo 上实际打过并通过语法检查；
-- 数据审计脚本在 141 张氟斑牙上实测通过。
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+CONFIG=$PWD/offline_configs/config_dental_vitb_224.yaml \
+OUTPUT=$PWD/output/official-dental-vitb-224 \
+bash run_official_dinov3.sh
+```
+
+- 42,616 张，`OFFICIAL_EPOCH_LENGTH = 444`（`ceil(42616/96)`）；
+- 60 epochs = 26,640 steps；
+- 峰值 LR = `0.0001 × 4 × sqrt(96/1024) = 1.22e-4`；
+- 每 500 步保存 DCP，`max_to_keep: 10`，另保留每 5k 步的 checkpoint。
+
+## 4. Stage 2：512/128 高分辨率适应（约 1 小时）
+
+Stage 1 正常跑完后，**用同一个 OUTPUT 续训**：
+
+```bash
+cd ~/MRG-05-Tooth-Seg/lab_train
+CONFIG=$PWD/offline_configs/config_dental_vitb_512.yaml \
+OUTPUT=$PWD/output/official-dental-vitb-224 \
+RESUME=1 \
+bash run_official_dinov3.sh
+```
+
+- 只改 `crops`、`batch_size_per_gpu`、`optim.epochs`；
+- `train.OFFICIAL_EPOCH_LENGTH` 保持 444（它是 schedule 单位，不是每 epoch 图数）；
+- `epochs=72` → 总 31,968 步，Stage 1 结束在 26,640，剩 5,328 步；
+- 起始 LR ≈ 1.2e-5，衰减到 1e-6，属于高分辨率适应的低 LR 区间；
+- 数据 loader 会继续用同一个 output 的 checkpoint，不会重新初始化。
+
+> 如果 Stage 1 改过 batch / epoch length，Stage 2 必须同步：
+> `Stage2.OFFICIAL_EPOCH_LENGTH = Stage1.OFFICIAL_EPOCH_LENGTH`，
+> `Stage2.epochs = Stage1.epochs × 1.2`。
+> 否则 resume 的 iteration 可能超过 Stage 2 的 `max_iter`，训练会直接结束或
+> LR 停留在 1e-6。
+
+> 不要用 `--no-resume` 跑 Stage 2；`RESUME=1` 会去掉该参数。
+
+## 5. 显存与 batch 对照
+
+以下按 8.8 GB @ `512/128, batch 8, 6 local crops` 的实测线性外推，**以 `nvidia-smi` 为准**：
+
+跑完 Stage 0 后先看日志的 `max mem`：
+
+```bash
+tail -1 output/official-dental-diag-224/nan_logs/logs/log.txt
+```
+
+如果明显低于 22,000 MB，可按 `新 batch ≈ 当前 batch × 22000 / max_mem` 提高，
+再跑一次 Stage 0 确认，然后用新 batch 启动 Stage 1。
+
+| 分辨率 / local | batch | tokens/step | 预计峰值 | 备注 |
+| --- | ---: | ---: | ---: | --- |
+| 224 / 96 | 64 | 39k | ~16 GB | 保守 |
+| 224 / 96 | 80 | 49k | ~19 GB | |
+| **224 / 96** | **96** | **58k** | **~22 GB** | **默认** |
+| 224 / 96 | 112 | 68k | ~25 GB | 可能 OOM |
+| 512 / 128 | 16 | 39k | ~16 GB | |
+| 512 / 128 | 20 | 49k | ~19 GB | |
+| **512 / 128** | **24** | **58k** | **~22 GB** | **默认** |
+| 512 / 128 | 28 | 68k | ~25 GB | 可能 OOM |
+
+OOM 时按 `batch` 回退，同时改 `OFFICIAL_EPOCH_LENGTH`：
+
+| batch | 224 的 epoch length | 512 的 epoch length |
+| ---: | ---: | ---: |
+| 96 | 444 | — |
+| 80 | 533 | — |
+| 64 | 666 | — |
+| 24 | — | 444（schedule 单位，保持不变） |
+| 20 | — | 444（保持不变） |
+
+> Stage 2 的 `OFFICIAL_EPOCH_LENGTH` 故意不改成 `ceil(42616/24)=1776`：
+> 它必须与 Stage 1 相同，才能让 cosine 尾段落在正确的 iteration 上。
+
+## 6. 监控与产物
+
+日志：
+
+```text
+output/official-dental-vitb-224/nan_logs/logs/log.txt   # 官方文本日志
+output/official-dental-vitb-224/training_metrics.json   # JSONL，每 10 步一行
+output/official-dental-vitb-224/stdout.log              # torchrun 控制台
+output/official-dental-vitb-224/ckpt/<iter>/            # DCP checkpoint
+```
+
+快速看 loss：
+
+```bash
+grep "Training" output/official-dental-vitb-224/nan_logs/logs/log.txt | tail -3
+```
+
+## 7. 常见启动错误
+
+- `ValueError: ... gram.it_load_ema_teacher must be non-negative`
+  → 配置已加 `gram.it_load_ema_teacher: 0`、`gram.rep_update: false`；
+  **重新运行 `setup_offline_dinov3.sh`**。
+- `ImageFolder:root=./dataset` 被解析到 `third_party/dinov3/dataset`
+  → `run_official_dinov3.sh` 从 `lab_train/` 启动；setup 写入绝对路径。
+- `TypeError: must be str, not DictConfig`
+  → setup 的 patch 会修 logging formatter；重新运行 setup。
+- `AssertionError` in `build_schedulers`（smoke）
+  → `SMOKE=1` 会把总步数压到 100；脚本同时覆盖 warmup/freeze 为 0。
+- `OSError: image file is truncated`
+  → setup 会在 `decoders.py` 开启 `LOAD_TRUNCATED_IMAGES`；ImageFolder 也会跳过坏图。
+  仍建议用 `build_dedup_view.py --delete-corrupt` 清掉源文件。
+- `FileNotFoundError: '/PATH/TO/weights/dinov3-vitb16-official.pth'`
+  → `offline_configs/` 里的配置是从 patch 目录手工拷贝的，占位符没替换。
+  重跑 `setup_offline_dinov3.sh`；新版 `run_official_dinov3.sh` 也会检测
+  `dataset_path` / `resume_from_teacher_chkpt` 中的 `/PATH/TO/` 并自动重建。
+- DINO loss 停在 ~10.40（K=32768 的均匀基线）
+  → `centering` 不是 softmax，或 `offline_configs` 是旧的。重新跑 setup，并用
+  `grep centering offline_configs/*.yaml` 确认。
+- 启动被 `ERROR: ... does not set train.centering: softmax` 拒绝
+  → 这是有意的保护；确认配置正确后再启动。只有明确知道 batch 很大时才用
+  `ALLOW_SINKHORN=1`。

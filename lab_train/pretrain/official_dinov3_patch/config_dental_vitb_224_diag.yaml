@@ -1,0 +1,98 @@
+# Stage 0: 2,220-step diagnostic for the official DINOv3 recipe.
+# Same data/model/batch as config_dental_vitb_224.yaml, but all warmups are
+# disabled so the loss trajectory is visible within the first few hundred steps.
+#
+# Pass criterion (see README section 8):
+#   K = 32768, so a uniform teacher target gives ln(32768) = 10.397.
+#   step ~100 : dino_*_crops_loss < 10.39  (softmax path is active)
+#   step 2220 : at least 0.2 nat below step 100, ideally < 10.2
+#   iBOT loss : stable below ~4.8 once teacher_temp is fixed at 0.07
+# If DINO stays at ~10.40 from the first step, softmax centering did not take effect.
+
+MODEL:
+  META_ARCHITECTURE: SSLMetaArch
+  DEVICE: cuda
+  DTYPE: float32
+
+train:
+  dataset_path: ImageFolder:root=/PATH/TO/dental_pretrain
+  batch_size_per_gpu: 96
+  OFFICIAL_EPOCH_LENGTH: 444   # ceil(42616 / 96)
+  num_workers: 12
+  checkpointing: true
+  checkpointing_full: false
+  compile: false
+  cudagraphs: false
+  saveckp_freq: 500
+  seed: 0
+  centering: "softmax"
+
+student:
+  arch: vit_base
+  patch_size: 16
+  drop_path_rate: 0.1
+  layerscale: 1.0e-05
+  n_storage_tokens: 4
+  qkv_bias: true
+  proj_bias: true
+  ffn_bias: true
+  norm_layer: layernorm
+  ffn_layer: mlp
+  pos_embed_rope_base: 100.0
+  pos_embed_rope_normalize_coords: separate
+  pos_embed_rope_rescale_coords: 2.0
+  pos_embed_rope_dtype: bf16
+  resume_from_teacher_chkpt: /PATH/TO/weights/dinov3-vitb16-official.pth
+
+teacher:
+  momentum_teacher: 0.992
+  final_momentum_teacher: 1.0
+  warmup_teacher_temp: 0.04
+  teacher_temp: 0.07
+  warmup_teacher_temp_epochs: 0   # diagnostic: fix the temperature immediately
+
+dino:
+  koleo_loss_weight: 0.05
+  head_n_prototypes: 32768
+
+ibot:
+  loss_weight: 1.0
+  mask_sample_probability: 0.5
+  separate_head: true
+  head_n_prototypes: 32768
+
+gram:
+  use_loss: false
+  ema_teacher: true
+  it_load_ema_teacher: 0
+  rep_update: false
+  loss_weight: 1.0
+  tokens_used: all
+  normalized: true
+  img_level: false
+  remove_neg: false
+
+crops:
+  global_crops_size: 224
+  local_crops_size: 96
+  local_crops_number: 6
+  global_crops_scale: [0.32, 1.0]
+  local_crops_scale: [0.05, 0.32]
+
+optim:
+  epochs: 5                    # 5 x 444 = 2,220 steps
+  lr: 0.0001                   # peak 1.22e-4 at batch 96
+  warmup_epochs: 0             # diagnostic: no LR warmup
+  weight_decay: 0.04
+  weight_decay_end: 0.4
+  clip_grad: 3.0
+  freeze_last_layer_epochs: 0  # diagnostic: train the last layer immediately
+  scaling_rule: sqrt_wrt_1024
+
+checkpointing:
+  period: 500
+  max_to_keep: 3
+  keep_every: 99999999999999999
+
+evaluation:
+  eval_period_iterations: 999999999

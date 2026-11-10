@@ -349,14 +349,16 @@ python tools/filter_noise_images.py --images dataset/positive --recursive --appl
 
 静态阈值（`--min-brightness`、`--max-highlight-ratio`、`--min-sharpness`）为起始默认值，需在人工标注样本上校准后再用于全量数据；模型层默认 `--min-teeth 2 --min-confidence 0.5`，对应 `draft/README.md` 的「检测不到牙齿或仅低置信度检出 1–2 颗即剔除」。脚本拒绝运行于 `dataset/raw/`，且 `--apply` 只隔离、不删除。
 
-## 域内预训练（v15 / 论文 A·A2，lab_train）
+## 域内预训练（v16 / 论文 A·A2，lab_train）
 
-DINOv3 口内照片域内 continue pretraining（OralDINO）在 `lab_train/` 服务器包内完成（RTX PRO 6000 Blackwell / cu130），不在本地跑：
+DINOv3 口内照片域内 continue pretraining（OralDINO）在 `lab_train/` 服务器包内完成（RTX PRO 6000 Blackwell / cu130），不在本地跑。v16 起改用**官方 DINOv3 代码 + 渐进式 224→512 配方**：
 
-- 环境与命令：`lab_train/README.md`「七、DINOv3 域内预训练（v15 / 论文 A·A2）」
-- 数据准备：`lab_train/pretrain/prepare_pretrain_data.py`（跨目录 SHA256 去重 → `pretrain_manifest.json`）
-- 训练：`lab_train/pretrain/pretrain.py`（student/teacher EMA + 多裁剪 + 中心化，精简 DINO 参考实现；支持梯度累积和自动 `metrics.csv`/`train.log`）
-- 推荐配置：`lab_train/pretrain/config.512-25g.json`（512 全局 / 128 局部，有效 batch 32，适配约 25 GB 显存）
+- 环境、数据去重与完整命令顺序：`lab_train/README.md`「八、官方 DINOv3 渐进式训练（v16，当前推荐）」
+- 离线安装与排错：`lab_train/OFFLINE_DINOV3.md`
+- 数据审计 / 去重视图：`lab_train/pretrain/audit_pretrain_data.py`、`lab_train/pretrain/build_dedup_view.py`
+- 三阶段：Stage 0 诊断（224/96，2,220 步）→ Stage 1 主训练（224/96，batch 96，60 epochs）→ Stage 2 高分辨率适应（512/128，batch 24，resume）
+
+v15 的 `pretrain.py` P0 / control 配方已停用，仅保留作失败对照。55k 步实验确认：batch 8 下 Sinkhorn-Knopp 的 DINO CLS 目标会退化为均匀分布（loss ≈ `ln 65536`），因此官方配方必须使用 `train.centering: "softmax"`，并把 batch 提到显存允许的范围；配置在 `lab_train/pretrain/official_dinov3_patch/`。
 
 自监督预训练只用图像不看标签；DINOv3 权重在 HuggingFace 门控，需 `HF_TOKEN`。`kaggle_train/`、`colab_train/` 不做预训练适配（预训练固定在 lab_train 训练服务器上）。
 

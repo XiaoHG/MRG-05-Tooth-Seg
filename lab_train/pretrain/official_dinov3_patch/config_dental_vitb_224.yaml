@@ -1,6 +1,12 @@
-# Faster / lower-memory 224 variant for smoke tests or a first stage.
+# Stage 1: 224/96 main continue-pretraining for the official DINOv3 recipe.
 # Merged on top of dinov3/configs/ssl_default_config.yaml.
-# Replace /PATH/TO/... before running.
+#
+# Data: 42,616 unique images after SHA256 dedup (see build_dedup_view.py).
+# Memory target: ~22 GB peak at batch 96 with activation checkpointing,
+# 2 global crops of 224 and 6 local crops of 96.  Verify with nvidia-smi.
+# If OOM: batch 80 -> OFFICIAL_EPOCH_LENGTH 533; batch 64 -> 666.
+#
+# Replace /PATH/TO/... by running setup_offline_dinov3.sh.
 
 MODEL:
   META_ARCHITECTURE: SSLMetaArch
@@ -9,15 +15,18 @@ MODEL:
 
 train:
   dataset_path: ImageFolder:root=/PATH/TO/dental_pretrain
-  batch_size_per_gpu: 16
-  OFFICIAL_EPOCH_LENGTH: 2664   # ceil(42616 / 16)
-  num_workers: 8
-  checkpointing: true
+  batch_size_per_gpu: 96
+  OFFICIAL_EPOCH_LENGTH: 444   # ceil(42616 / 96)
+  num_workers: 12
+  checkpointing: true           # activation checkpointing
   checkpointing_full: false
   compile: false
   cudagraphs: false
-  saveckp_freq: 5
+  saveckp_freq: 20
   seed: 0
+  # Small-batch regimes (batch < 512) make Sinkhorn-Knopp produce a near-uniform
+  # teacher target.  The softmax+center path is the DINOv2-style fallback.
+  centering: "softmax"
 
 student:
   arch: vit_base
@@ -34,6 +43,7 @@ student:
   pos_embed_rope_normalize_coords: separate
   pos_embed_rope_rescale_coords: 2.0
   pos_embed_rope_dtype: bf16
+  # Official loader expects a consolidated `teacher` checkpoint with backbone.* keys.
   resume_from_teacher_chkpt: /PATH/TO/weights/dinov3-vitb16-official.pth
 
 teacher:
@@ -41,21 +51,28 @@ teacher:
   final_momentum_teacher: 1.0
   warmup_teacher_temp: 0.04
   teacher_temp: 0.07
-  warmup_teacher_temp_epochs: 5
+  warmup_teacher_temp_epochs: 3
 
 dino:
   koleo_loss_weight: 0.05
-  head_n_prototypes: 65536
+  # 65536 prototypes were designed for batch 512+; 32768 saves ~1.5 GB of head
+  # activations at batch 96 and gives slightly sharper softmax targets.
+  head_n_prototypes: 32768
 
 ibot:
   loss_weight: 1.0
   mask_sample_probability: 0.5
   separate_head: true
-  head_n_prototypes: 65536
+  head_n_prototypes: 32768
 
 gram:
-  use_loss: true
+  # The ema_teacher variant uses the live EMA teacher as the Gram target, so
+  # student ~= teacher and the loss is ~0.  Keep it off for the diagnostic and
+  # main run; add a frozen-checkpoint anchor only if a later experiment needs it.
+  use_loss: false
   ema_teacher: true
+  it_load_ema_teacher: 0
+  rep_update: false
   loss_weight: 1.0
   tokens_used: all
   normalized: true
@@ -65,13 +82,14 @@ gram:
 crops:
   global_crops_size: 224
   local_crops_size: 96
-  local_crops_number: 8
+  local_crops_number: 6
   global_crops_scale: [0.32, 1.0]
   local_crops_scale: [0.05, 0.32]
 
 optim:
-  epochs: 15
-  lr: 0.0003                  # scaled by sqrt_wrt_1024 -> ~1.5e-4 at batch 16
+  epochs: 60                   # 60 x 444 = 26,640 optimizer steps
+  # sqrt_wrt_1024 scales this to 0.0001 * 4 * sqrt(96/1024) = 1.22e-4.
+  lr: 0.0001
   warmup_epochs: 3
   weight_decay: 0.04
   weight_decay_end: 0.4
@@ -80,8 +98,9 @@ optim:
   scaling_rule: sqrt_wrt_1024
 
 checkpointing:
-  period: 1000
-  max_to_keep: 5
+  period: 500
+  max_to_keep: 10
+  keep_every: 5000
 
 evaluation:
   eval_period_iterations: 999999999

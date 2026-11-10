@@ -1,10 +1,19 @@
-# Delta config for official facebookresearch/dinov3 training.
-# Merged on top of dinov3/configs/ssl_default_config.yaml.
+# Stage 2: 512/128 high-resolution adaptation, resumed from stage 1.
 #
-# Replace /PATH/TO/... before running.
-# Single-GPU 25 GB setting: batch 8 at 512, activation checkpointing on.
-# If you have multiple GPUs, raise batch_size_per_gpu and set
-# OFFICIAL_EPOCH_LENGTH = ceil(42616 / (batch_size_per_gpu * world_size)).
+# IMPORTANT: keep train.OFFICIAL_EPOCH_LENGTH = 444.  It is the schedule unit,
+# not "images per epoch".  Stage 1 ends at iteration 26640 (60 x 444).  With
+# epochs=72 the total is 31968, leaving 5328 steps (~3 passes at batch 24) for
+# the high-resolution phase.  The cosine tail starts at ~1.2e-5 and decays to
+# 1e-6, which is the intended "low-LR adaptation" regime.
+#
+# Resume with:
+#   CONFIG=.../config_dental_vitb_512.yaml \
+#   OUTPUT=.../official-dental-vitb-224 \
+#   RESUME=1 bash run_official_dinov3.sh
+#
+# Memory: batch 24 at 512/128 with 6 local crops is ~22 GB peak, the same token
+# count as batch 96 at 224/96.  If OOM, use batch 20 (approx 19 GB) and set
+# OFFICIAL_EPOCH_LENGTH to 444 still.
 
 MODEL:
   META_ARCHITECTURE: SSLMetaArch
@@ -13,15 +22,16 @@ MODEL:
 
 train:
   dataset_path: ImageFolder:root=/PATH/TO/dental_pretrain
-  batch_size_per_gpu: 8
-  OFFICIAL_EPOCH_LENGTH: 5327   # ceil(42616 / 8)
-  num_workers: 8
-  checkpointing: true           # activation checkpointing
+  batch_size_per_gpu: 24
+  OFFICIAL_EPOCH_LENGTH: 444   # schedule unit, do not replace with 42616/24
+  num_workers: 12
+  checkpointing: true
   checkpointing_full: false
   compile: false
   cudagraphs: false
-  saveckp_freq: 5
+  saveckp_freq: 50
   seed: 0
+  centering: "softmax"
 
 student:
   arch: vit_base
@@ -38,7 +48,6 @@ student:
   pos_embed_rope_normalize_coords: separate
   pos_embed_rope_rescale_coords: 2.0
   pos_embed_rope_dtype: bf16
-  # Official loader expects a consolidated `teacher` checkpoint with backbone.* keys.
   resume_from_teacher_chkpt: /PATH/TO/weights/dinov3-vitb16-official.pth
 
 teacher:
@@ -46,21 +55,23 @@ teacher:
   final_momentum_teacher: 1.0
   warmup_teacher_temp: 0.04
   teacher_temp: 0.07
-  warmup_teacher_temp_epochs: 5
+  warmup_teacher_temp_epochs: 3
 
 dino:
-  koleo_loss_weight: 0.05   # official is 0.1; reduced for single-GPU small batch
-  head_n_prototypes: 65536
+  koleo_loss_weight: 0.05
+  head_n_prototypes: 32768
 
 ibot:
   loss_weight: 1.0
   mask_sample_probability: 0.5
   separate_head: true
-  head_n_prototypes: 65536
+  head_n_prototypes: 32768
 
 gram:
-  use_loss: true
+  use_loss: false
   ema_teacher: true
+  it_load_ema_teacher: 0
+  rep_update: false
   loss_weight: 1.0
   tokens_used: all
   normalized: true
@@ -75,8 +86,10 @@ crops:
   local_crops_scale: [0.05, 0.32]
 
 optim:
-  epochs: 15
-  lr: 0.0003                  # scaled by sqrt_wrt_1024 -> ~1.06e-4 at batch 8
+  epochs: 72                   # 72 x 444 = 31,968: 5,328 steps after stage 1
+  # sqrt_wrt_1024: 0.00025 * 4 * sqrt(24/1024) = 1.53e-4 peak.
+  # At iteration 26640 the schedule is at ~1.2e-5.
+  lr: 0.00025
   warmup_epochs: 3
   weight_decay: 0.04
   weight_decay_end: 0.4
@@ -85,8 +98,9 @@ optim:
   scaling_rule: sqrt_wrt_1024
 
 checkpointing:
-  period: 1000
-  max_to_keep: 5
+  period: 500
+  max_to_keep: 10
+  keep_every: 5000
 
 evaluation:
   eval_period_iterations: 999999999
