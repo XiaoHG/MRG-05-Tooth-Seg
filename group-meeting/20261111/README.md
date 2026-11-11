@@ -8,8 +8,9 @@
 - [x] 数字来源与口径（`SOURCES.md`）
 - [x] 审核意见回填
 - [x] 完整版 PPT（`OralDINO_group_meeting_20261111.pptx`，21 页）
-- [x] 10 分钟版 PPT（`OralDINO_group_meeting_20261111_10min.pptx`，12 页；含 DINOv3 架构页）
-- [x] 手动版备份（`OralDINO_group_meeting_20261111_10min_manual_backup.pptx`）
+- [x] 10 分钟版 PPT（`OralDINO_group_meeting_20261111_10min.pptx`，11 页；含 DINOv3 架构页）
+- [x] 个人命名版（`覃建海-组会20261111.pptx`，11 页，脚本同步生成）
+- [x] 手动版备份（`OralDINO_group_meeting_20261111_10min_manual_backup.pptx`、`覃建海-组会20261111_manual_backup.pptx`）
 - [ ] 视觉微调 / 现场排练（按需）
 
 ## 当前结论（2026-11-11）
@@ -50,7 +51,7 @@
 3. 问题、下一步与论文安排（Slide 17–19）
 4. 论文摘要与总结（Slide 20–21）
 
-### 10 分钟版（12 页，已整理）
+### 10 分钟版（11 页，已整理）
 
 1. 封面
 2. 背景、域鸿沟与标注瓶颈（含 RQ1–RQ3）
@@ -59,13 +60,12 @@
 5. 多源数据与预训练设计（含 Stage 0/1/2 参数）
 6. 模型架构与下游评估（含 A3 术语说明）
 7. 数据、评估协议与实验矩阵
-8. 检测基线（8 模型 before/after）
-9. Stage 1 完成 + 5k/10k/15k/16k probe 结果
-10. 问题、下一步与论文安排
-11. 论文摘要（保留）
-12. 总结与讨论
+8. Stage 1 完成 + 5k/10k/15k/16k probe 结果
+9. 问题、下一步与论文安排
+10. 论文摘要（保留）
+11. 总结与讨论
 
-> 手动删除的 P0 复盘页保留删除状态；其“loss ≠ 下游”的结论仍保留在总结页。
+> 手动删除的 P0 复盘页、检测基线页保留删除状态；完整版中仍有这两页。
 > P0 的完整内容仍在完整版第 15 页。
 
 ## 文件
@@ -75,8 +75,10 @@
 | `OUTLINE.md` | 逐页大纲、讲稿提示、待确认事项、图表清单 |
 | `SOURCES.md` | 所有数字的来源与口径，便于审核核对 |
 | `OralDINO_group_meeting_20261111.pptx` | 完整版 PPT（21 页，16:9） |
-| `OralDINO_group_meeting_20261111_10min.pptx` | 10 分钟版 PPT（12 页，16:9，含 DINOv3 架构页） |
+| `OralDINO_group_meeting_20261111_10min.pptx` | 10 分钟版 PPT（11 页，16:9，含 DINOv3 架构页） |
+| `覃建海-组会20261111.pptx` | 个人命名版（11 页，与 10 分钟版同步） |
 | `OralDINO_group_meeting_20261111_10min_manual_backup.pptx` | 手动编辑版备份（11 页） |
+| `覃建海-组会20261111_manual_backup.pptx` | 个人命名版备份（10 页） |
 | `build_ppt.py` | 完整版生成脚本 |
 | `build_ppt_10min.py` | 10 分钟版生成脚本 |
 | `README.md` | 本目录说明与审核状态 |
@@ -87,7 +89,7 @@
 # 完整版（21 页）
 /tmp/pptx-env/bin/python group-meeting/20261111/build_ppt.py
 
-# 10 分钟版（12 页）
+# 10 分钟版（11 页）
 /tmp/pptx-env/bin/python group-meeting/20261111/build_ppt_10min.py
 ```
 
@@ -97,6 +99,6 @@
 ## 汇报前检查
 
 1. 打开 10 分钟版，确认中文字体（PingFang SC / Arial）在本机正常；
-2. 第 9 页的 probe 表应与你最新的评估结果一致；如果补了更多 checkpoint，更新表格；
-3. 第 10 页的下一步应与当前结论一致（配方迭代/LoRA）；
-4. 确认目标会议/期刊，更新第 10 页的论文安排。
+2. 第 8 页的 probe 表应与你最新的评估结果一致；如果补了更多 checkpoint，更新表格；
+3. 第 9 页的下一步应与当前结论一致（配方迭代/LoRA）；
+4. 确认目标会议/期刊，更新第 9 页的论文安排。
