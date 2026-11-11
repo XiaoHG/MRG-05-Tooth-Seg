@@ -327,6 +327,48 @@ card(s, 0.7, 4.95, 11.75, 1.85, "讨论点",
      accent=ORANGE, title_size=14, body_size=10.5)
 footer(s, 3)
 
+# ================================================================ Slide 4 (DINOv3)
+s = blank()
+section(s, "01 / 方法背景")
+title(s, "对 DINOv3 的理解：自监督 + 师生 EMA + 多裁剪")
+box(s, 0.6, 1.3, 1.6, 0.6, "输入图像", size=10.5)
+arrow(s, 2.25, 1.46, 0.3, 0.26)
+box(s, 2.65, 1.3, 3.2, 0.6, "多裁剪\n2 global 224 + 6 local 96", size=9.5)
+arrow(s, 5.9, 1.46, 0.3, 0.26)
+box(s, 6.3, 1.3, 1.3, 0.6, "ViT-B/16", fill=NAVY, line=NAVY, color=WHITE, size=10.5)
+box(s, 0.6, 2.2, 3.3, 0.85, "Student ViT-B/16\n12 blocks · RoPE · 4 storage tokens",
+    size=9, fill=PALE, line=TEAL)
+box(s, 4.2, 2.2, 3.3, 0.85, "Teacher ViT-B/16（EMA）\n不接收梯度",
+    size=9, fill=RGBColor(0xE8, 0xEE, 0xF7), line=NAVY)
+arrow(s, 3.95, 2.48, 0.25, 0.24)
+tx(s, 3.9, 2.02, 0.4, 0.2, "EMA", size=7.5, color=GRAY)
+for x in (1.4, 3.5):
+    shp = s.shapes.add_shape(MSO_SHAPE.DOWN_ARROW, Inches(x), Inches(3.02),
+                             Inches(0.22), Inches(0.28))
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = TEAL
+    shp.line.fill.background()
+    shp.shadow.inherit = False
+box(s, 0.6, 3.35, 1.9, 0.7, "DINO head（CLS）\n32768 prototypes", size=9)
+box(s, 2.7, 3.35, 1.9, 0.7, "iBOT head（patch）\nmasked patch 预测", size=9)
+box(s, 4.8, 3.35, 2.7, 0.7, "Teacher targets\nsoftmax + center",
+    size=9, fill=RGBColor(0xE8, 0xEE, 0xF7), line=NAVY)
+box(s, 0.6, 4.35, 6.9, 0.85,
+    "Loss = DINO CLS + iBOT（masked patch） + KoLeo\n学生预测教师分布；teacher 由 EMA 提供稳定目标",
+    size=9, fill=RGBColor(0xFF, 0xF1, 0xE2), line=ORANGE)
+tx(s, 0.6, 5.35, 6.9, 0.9,
+   "我们的改动：softmax+center 替换 Sinkhorn；32768 prototypes；Gram 关闭；224/96 → 512/128。",
+   size=9.5, color=GRAY, line_spacing=1.1)
+bullets(s, 8.0, 1.3, 4.6, 5.7, [
+    "自监督：不需要标签；多裁剪提供尺度/视角。",
+    "师生 EMA：teacher 提供稳定目标，避免表示坍缩。",
+    "iBOT：掩码 patch 预测，学习局部细节。",
+    "RoPE + 4 storage tokens：支持可变分辨率。",
+    "DINO head：32768 原型，形成语义聚类。",
+    "我们：softmax+center、K=32768、Gram off、224→512。",
+], size=10.5)
+footer(s, 4)
+
 # ================================================================ Slide 4
 s = blank()
 section(s, "01 / 方法")
@@ -358,7 +400,7 @@ data2 = [
 ]
 table(s, 0.7, 5.15, 11.75, 1.55, data2,
       col_widths=[1.3, 1.3, 1.0, 1.2, 1.5, 1.3], font_size=11)
-footer(s, 4)
+footer(s, 5)
 
 # ================================================================ Slide 5
 s = blank()
@@ -388,7 +430,7 @@ tx(s, 0.9, 5.84, 11.35, 0.62,
    "术语：A3 = 论文的下游有效性评估阶段（A0 数据/基线 → A1 数据 → A2 预训练 → "
    "A3 下游验证 → A4 撰写）；「检测 A3」= 用牙齿检测任务验证 OralDINO。",
    size=10.5, color=NAVY, line_spacing=1.08)
-footer(s, 5)
+footer(s, 6)
 
 # ================================================================ Slide 6
 s = blank()
@@ -433,7 +475,7 @@ shp.shadow.inherit = False
 tx(s, 0.95, 5.78, 11.3, 0.5,
    "关键 gate：先做 E6 冻结 probe；如果 7k/10k/16k 都不优于 base，暂停 LoRA / 检测 A3 的大投入。",
    size=11.5, bold=True, color=NAVY)
-footer(s, 6)
+footer(s, 7)
 
 # ================================================================ Slide 7
 s = blank()
@@ -457,70 +499,71 @@ bullets(s, 0.7, 5.95, 11.75, 0.9, [
     "8 个模型 mAP50-95 全部提升（+0.022 ~ +0.044）；RT-DETRv2-L 最优 0.7137，YOLO26m mAP50 0.9867。",
     "收益集中在严格定位质量；检测基线可复现，A3 用 RT-DETRv2-L / YOLO26m。",
 ], size=11.5)
-footer(s, 7)
+footer(s, 8)
 
 # ================================================================ Slide 9
 s = blank()
 section(s, "02 / 实验进度")
-title(s, "Stage 1 完成：训练健康，但 frozen probe 低于 base")
+title(s, "Stage 1 完成：5k→16k 全部低于 base")
 card(s, 0.7, 1.5, 4.2, 2.05, "Stage 1 完成（16,080 步）",
      "16,080 / 16,080；batch 320\n"
      "DINO 0.345 / 0.263；iBOT 2.352\n"
      "KoLeo -0.252；21.6 GB\n"
      "最终 ckpt 15,999",
      accent=GREEN, title_size=14, body_size=11.5)
-card(s, 0.7, 3.75, 4.2, 1.55, "14999 vs 15999",
-     "两项下游无差异（p>0.2）\n"
-     "15k 不是“最后 1k 步过训练”",
-     accent=AMBER, title_size=14, body_size=11.5)
+card(s, 0.7, 3.75, 4.2, 1.55, "检查点趋势（QWK）",
+     "5k 0.847 → 10k 0.872\n"
+     "15k 0.886 → 16k 0.884\n"
+     "训练越久越好；早停不能救",
+     accent=RED, title_size=14, body_size=11)
 tx(s, 0.7, 5.55, 4.3, 0.9,
    "Stage 0：2,220 步，DINO 10.40→9.68，证明 softmax 生效。",
    size=10.5, color=GRAY)
 data = [
     ["模型", "氟斑牙 QWK（200）", "口腔疾病 QWK（720）", "口腔疾病 Acc"],
     ["base", "0.916", "0.848", "0.828"],
-    ["15999 teacher", "0.884", "0.820", "0.799"],
-    ["15999 student", "0.889", "0.822", "0.800"],
-    ["14999 teacher", "0.886", "0.820", "0.799"],
-    ["14999 student", "0.885", "0.822", "0.799"],
+    ["5k teacher", "0.847", "0.808", "0.795"],
+    ["10k teacher", "0.872", "0.819", "0.799"],
+    ["15k teacher", "0.886", "0.820", "0.799"],
+    ["16k teacher", "0.884", "0.820", "0.799"],
 ]
 tbl = table(s, 5.25, 1.55, 7.3, 2.55, data,
             col_widths=[2.0, 1.8, 1.8, 1.7], font_size=11,
             highlight_rows={1: RGBColor(0xE8, 0xF2, 0xF0)})
 bullets(s, 5.25, 4.35, 7.3, 1.9, [
-    "两项下游、teacher/student 全部低于 base；p<0.001。",
-    "特征过度分散：pair cosine 0.82→0.14 / 0.63→0.07。",
-    "下一步：评估 5k/10k；若仍不如 base，转 LoRA/全量或调配方。",
-], size=11.5)
-footer(s, 8)
+    "student 与 teacher 趋势一致（差 ≤0.005）；全部低于 base，p<0.001。",
+    "5k 已过度分散：pair cosine 0.16；15k/16k 仍 0.14。",
+    "下一步：base 蒸馏/冻结 Gram、降 K/KoLeo；不再等早停。",
+], size=11)
+footer(s, 9)
 
 # ================================================================ Slide 10
 s = blank()
 section(s, "03 / 下一步")
 title(s, "问题、下一步与论文安排")
 card(s, 0.7, 1.5, 3.75, 4.7, "当前问题",
-     "probe 负结果：两项下游均低于 base\n\n"
-     "特征过度分散：pair cosine 0.82→0.14\n\n"
-     "15k≈16k：不是最后 1k 步问题\n\n"
-     "K/N=0.77；Stage 2 未跑",
+     "早停假设否定：5k 最差，15k 最好\n\n"
+     "过度分散在 5k 已发生（0.16）\n\n"
+     "全参数 recipe 不能超过 base\n\n"
+     "K/N=0.77；数据源偏置",
      accent=RED, title_size=15, body_size=11.5)
 card(s, 4.75, 1.5, 3.75, 4.7, "下一步",
-     "先评 5k/10k（4999/9999_keep）\n\n"
-     "若仍不如 base → LoRA/全量\n\n"
-     "再决定 512 / Stage 2 / 检测 A3\n\n"
-     "论文：按 probe 结论调整故事",
+     "base 蒸馏 / 冻结 Gram anchor\n\n"
+     "降 K/KoLeo/LR，短 schedule\n\n"
+     "数据质量/来源平衡\n\n"
+     "LoRA/全量验证；检测 A3 后置",
      accent=TEAL, title_size=15, body_size=11.5)
 card(s, 8.8, 1.5, 3.65, 4.7, "论文安排",
-     "11 月：预训练 + probe（已完成）\n\n"
-     "12 月：下游适配 + 检测 A3 + 消融\n\n"
+     "11 月：配方迭代 + LoRA\n\n"
+     "12 月：下游适配 + 检测 A3\n\n"
      "1 月：初稿\n\n"
      "2 月：投稿\n\n"
      "目标会议 / 期刊：待定",
      accent=NAVY, title_size=15, body_size=11.5)
 tx(s, 0.7, 6.4, 11.75, 0.4,
-   "原则：先确认 backbone 是否可用，再投入下游大实验。",
+   "原则：先解决特征漂移，再投入下游大实验。",
    size=11.5, bold=True, color=GRAY)
-footer(s, 9)
+footer(s, 10)
 
 # ================================================================ Slide 11
 s = blank()
@@ -548,13 +591,14 @@ card(s, 0.7, 1.62, 11.75, 4.85, "摘要",
      "牙齿目标检测在内的多维度下游评测任务体系，采用固定数据集划分、多随机种子实验机制，"
      "以 QWK、Macro-F1、mAP50-95 作为统一量化指标，全面对比冻结线性探测、LoRA 微调、全量"
      "微调三种迁移学习范式，并以原生 DINOv3 模型作为基线对照。\n"
-     "目前 Stage 1 已完成；冻结线性 probe 在氟斑牙 4 级与口腔疾病 6 类上尚未超过 base DINOv3。"
-     "更早 checkpoint、LoRA/全量微调与检测 A3 正在评估，最终结论待补充。",
+     "目前 Stage 1 已完成；5k/10k/15k/16k 的冻结线性 probe 在氟斑牙 4 级与口腔疾病 6 类上"
+     "均未超过 base DINOv3，且 5k 起已出现特征过度分散。下一步将评估 base 蒸馏/正则化配方"
+     "与 LoRA/全量微调，最终结论待补充。",
      accent=TEAL, title_size=15, body_size=13)
 tx(s, 0.7, 6.62, 11.75, 0.3,
    "关键词：口腔影像 · DINOv3 · 自监督预训练 · 域自适应 · 氟斑牙分级 · 牙齿检测",
    size=10.5, color=GRAY)
-footer(s, 10)
+footer(s, 11)
 
 # ================================================================ Slide 12
 s = blank()
@@ -564,7 +608,7 @@ tx(s, 0.7, 1.5, 5.9, 0.35, "三点结论", size=15, bold=True, color=TEAL)
 bullets(s, 0.7, 1.95, 5.9, 3.1, [
     "检测基线已收口：8 模型 + 828 固定 test + 人工复核。",
     "P0 失败已归因：loss 下降不等于下游提升；官方 recipe + softmax 是当前路线。",
-    "Stage 1 已完成，但 frozen probe 在两项下游均低于 base；下一步评估 5k/10k 与微调。",
+    "5k/10k/15k/16k 全部低于 base，早停假设否定；下一步改配方（base 蒸馏/降 K）与 LoRA/全量。",
 ], size=13)
 tx(s, 6.95, 1.5, 5.5, 0.35, "三个请教问题", size=15, bold=True, color=ORANGE)
 bullets(s, 6.95, 1.95, 5.5, 3.1, [
@@ -580,7 +624,7 @@ shp.line.fill.background()
 shp.shadow.inherit = False
 tx(s, 0.95, 5.78, 11.3, 0.45, "谢谢，欢迎讨论。",
    size=20, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
-footer(s, 11)
+footer(s, 12)
 
 prs.save(OUT)
 print(f"saved: {OUT}")
