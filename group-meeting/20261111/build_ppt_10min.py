@@ -257,7 +257,7 @@ shp = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.9), Inches(1.75),
 shp.fill.solid()
 shp.fill.fore_color.rgb = TEAL
 shp.line.fill.background()
-tx(s, 1.25, 1.65, 11.2, 0.4, "组会进度汇报 · 10 分钟版", size=13, color=TEAL, bold=True)
+tx(s, 1.25, 1.65, 11.2, 0.4, "组会进度汇报", size=13, color=TEAL, bold=True)
 tx(s, 1.25, 2.05, 11.2, 0.95, "OralDINO", size=54, bold=True, color=WHITE)
 tx(s, 1.25, 3.00, 11.2, 0.55,
    "多源口腔影像的 DINOv3 域内预训练与下游验证", size=23,
@@ -306,7 +306,7 @@ cards = [
     ("03  评估层", "氟斑牙 4 级 + 口腔疾病 6 类\n牙齿检测 A3\n冻结 / LoRA / 全量"),
 ]
 for i, (t, b) in enumerate(cards):
-    card(s, 0.7 + i * 4.02, 1.6, 3.78, 2.55, t, b,
+    card(s, 0.7 + i * 4.02, 1.5, 3.78, 2.2, t, b,
          accent=[TEAL, ORANGE, NAVY][i], title_size=16, body_size=12)
 stages = [
     ("A0", "数据/基线"), ("A1", "数据整合"), ("A2", "域内预训练"),
@@ -316,14 +316,15 @@ for i, (a, label) in enumerate(stages):
     x = 0.7 + i * 2.43
     fill = RGBColor(0xFF, 0xF1, 0xE2) if a == "A3" else PALE
     line = ORANGE if a == "A3" else TEAL
-    box(s, x, 4.65, 2.0, 0.8, f"{a}  {label}", fill=fill, line=line,
-        color=NAVY, size=12)
+    box(s, x, 4.0, 2.0, 0.7, f"{a}  {label}", fill=fill, line=line,
+        color=NAVY, size=11.5)
     if i < len(stages) - 1:
-        arrow(s, x + 2.03, 4.91, 0.34, 0.28)
-tx(s, 0.7, 5.75, 11.75, 0.8,
-   "A3 = 论文的下游有效性评估阶段；「检测 A3」= 用牙齿检测任务验证 OralDINO。\n"
-   "主线：数据 → 预训练 → 下游闭环；不在一篇论文里叠加过多模块。",
-   size=11.5, color=GRAY, line_spacing=1.15)
+        arrow(s, x + 2.03, 4.21, 0.34, 0.28)
+card(s, 0.7, 4.95, 11.75, 1.85, "讨论点",
+     "数据质量与多样性：大规模图像训练需要控制质量与多样性，这两者是生成优质特征的要素。\n"
+     "DINOv3 相关研究表明：来自小数据集的非常高质量数据组成的同质批次是有益的。\n"
+     "对 DINOv3 进行预训练（或微调）的调优。",
+     accent=ORANGE, title_size=14, body_size=10.5)
 footer(s, 3)
 
 # ================================================================ Slide 4
@@ -458,33 +459,6 @@ bullets(s, 0.7, 5.95, 11.75, 0.9, [
 ], size=11.5)
 footer(s, 7)
 
-# ================================================================ Slide 8
-s = blank()
-section(s, "02 / 实验进度")
-title(s, "P0 复盘：loss 下降 ≠ 下游提升")
-data = [
-    ["指标", "base", "P0 10k", "P0 final"],
-    ["氟斑牙 QWK（5 类）", "0.718", "0.315", "0.143"],
-    ["公开 6 类 acc", "0.820", "0.613", "0.574"],
-    ["pair cosine", "0.83", "0.039", "0.030"],
-    ["grayscale 余弦", "0.959", "0.301", "0.262"],
-]
-table(s, 0.7, 1.7, 5.6, 2.7, data,
-      col_widths=[2.0, 1.0, 1.25, 1.25], font_size=11.5,
-      highlight_rows={1: RGBColor(0xE8, 0xF2, 0xF0)})
-tx(s, 0.7, 4.55, 5.6, 0.6,
-   "P0 = 42k、batch 8、512、KoLeo 0.1、Sinkhorn；历史 5 类含 doubtful。",
-   size=10.5, color=GRAY)
-bullets(s, 6.55, 1.6, 5.9, 3.7, [
-    "目标错配：DINO 优化裁剪一致性，不是类别边界。",
-    "KoLeo 0.1 过强 + 特征不稳定：pair cosine 0.03，灰度余弦 0.30。",
-    "过训练 + 窄域小数据全参数继续预训练 → 灾难性遗忘。",
-], size=13)
-tx(s, 6.55, 5.55, 5.9, 0.7,
-   "教训：用下游 probe 早停，不用 training loss 选模型。",
-   size=13, bold=True, color=NAVY)
-footer(s, 8)
-
 # ================================================================ Slide 9
 s = blank()
 section(s, "02 / 实验进度")
@@ -518,7 +492,7 @@ bullets(s, 5.25, 4.35, 7.3, 1.9, [
     "特征过度分散：pair cosine 0.82→0.14 / 0.63→0.07。",
     "下一步：评估 5k/10k；若仍不如 base，转 LoRA/全量或调配方。",
 ], size=11.5)
-footer(s, 9)
+footer(s, 8)
 
 # ================================================================ Slide 10
 s = blank()
@@ -546,7 +520,7 @@ card(s, 8.8, 1.5, 3.65, 4.7, "论文安排",
 tx(s, 0.7, 6.4, 11.75, 0.4,
    "原则：先确认 backbone 是否可用，再投入下游大实验。",
    size=11.5, bold=True, color=GRAY)
-footer(s, 10)
+footer(s, 9)
 
 # ================================================================ Slide 11
 s = blank()
@@ -580,7 +554,7 @@ card(s, 0.7, 1.62, 11.75, 4.85, "摘要",
 tx(s, 0.7, 6.62, 11.75, 0.3,
    "关键词：口腔影像 · DINOv3 · 自监督预训练 · 域自适应 · 氟斑牙分级 · 牙齿检测",
    size=10.5, color=GRAY)
-footer(s, 11)
+footer(s, 10)
 
 # ================================================================ Slide 12
 s = blank()
@@ -606,7 +580,7 @@ shp.line.fill.background()
 shp.shadow.inherit = False
 tx(s, 0.95, 5.78, 11.3, 0.45, "谢谢，欢迎讨论。",
    size=20, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
-footer(s, 12)
+footer(s, 11)
 
 prs.save(OUT)
 print(f"saved: {OUT}")
