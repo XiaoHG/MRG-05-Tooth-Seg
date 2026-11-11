@@ -276,7 +276,7 @@ def main() -> int:
         labels_5class=all_labels["5-class"],
     )
 
-    lines = ["# Frozen linear probe: checkpoint 15999", ""]
+    lines = [f"# Frozen linear probe: {args.checkpoint.name}", ""]
     lines.append("| model | protocol | n | accuracy | macro-F1 | QWK |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
     for r in summary_rows:
