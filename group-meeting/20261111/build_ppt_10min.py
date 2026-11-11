@@ -488,41 +488,36 @@ footer(s, 8)
 # ================================================================ Slide 9
 s = blank()
 section(s, "02 / 实验进度")
-title(s, "官方 DINOv3：Stage 0 通过，Stage 1 训练中")
-card(s, 0.7, 1.5, 4.15, 2.0, "Stage 0 诊断（完成）",
-     "2,220 步 / 23:35 / 7.9 GB\nDINO 10.40 → 9.68\niBOT 5.00 / KoLeo -0.28",
+title(s, "Stage 1 完成：训练健康，但 frozen probe 低于 base")
+card(s, 0.7, 1.5, 4.2, 2.05, "Stage 1 完成（16,080 步）",
+     "16,080 / 16,080；batch 320\n"
+     "DINO 0.345 / 0.263；iBOT 2.352\n"
+     "KoLeo -0.252；21.6 GB\n"
+     "最终 ckpt 15,999",
      accent=GREEN, title_size=14, body_size=11.5)
-card(s, 0.7, 3.7, 4.15, 2.6, "Stage 1（44%）",
-     "7,080 / 16,080 步；batch 320\nDINO 0.78 / 0.69；iBOT 2.48\nKoLeo -0.25；21.6 GB；2.6 s/it\n梯度：backbone 1.83 / heads 0.21、0.15",
+card(s, 0.7, 3.75, 4.2, 1.55, "14999 vs 15999",
+     "两项下游无差异（p>0.2）\n"
+     "15k 不是“最后 1k 步过训练”",
      accent=AMBER, title_size=14, body_size=11.5)
-tx(s, 0.7, 6.45, 5.0, 0.4,
-   "16:21:41 SIGKILL；ckpt/6999 完整，可续训。",
-   size=11, color=RED, bold=True)
-chart_data = CategoryChartData()
-chart_data.categories = ["0", "1k", "2k", "3k", "4k", "5k", "6k", "7k"]
-chart_data.add_series("DINO local", (10.34, 7.65, 5.04, 4.34, 3.10, 1.83, 1.18, 0.81))
-chart_data.add_series("iBOT", (5.17, 4.51, 3.57, 3.08, 2.80, 2.64, 2.54, 2.48))
-gf = s.shapes.add_chart(XL_CHART_TYPE.LINE_MARKERS, Inches(5.35), Inches(1.55),
-                        Inches(7.1), Inches(4.55), chart_data)
-chart = gf.chart
-chart.has_title = True
-chart.chart_title.text_frame.text = "Stage 1 loss (500-step mean)"
-chart.chart_title.text_frame.paragraphs[0].runs[0].font.size = Pt(11)
-chart.has_legend = True
-chart.legend.position = XL_LEGEND_POSITION.BOTTOM
-chart.legend.include_in_layout = False
-chart.font.size = Pt(10)
-chart.value_axis.maximum_scale = 11
-chart.value_axis.minimum_scale = 0
-chart.value_axis.has_major_gridlines = True
-chart.value_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE8, 0xEC, 0xF2)
-chart.value_axis.major_gridlines.format.line.width = Pt(0.5)
-for series, color in zip(chart.series, (TEAL, ORANGE)):
-    series.format.line.color.rgb = color
-    series.format.line.width = Pt(2.5)
-tx(s, 5.35, 6.25, 7.1, 0.5,
-   "曲线健康、梯度未坍缩；低 loss 是否等于好特征，仍需 frozen probe 验证。",
-   size=11, color=GRAY)
+tx(s, 0.7, 5.55, 4.3, 0.9,
+   "Stage 0：2,220 步，DINO 10.40→9.68，证明 softmax 生效。",
+   size=10.5, color=GRAY)
+data = [
+    ["模型", "氟斑牙 QWK（200）", "口腔疾病 QWK（720）", "口腔疾病 Acc"],
+    ["base", "0.916", "0.848", "0.828"],
+    ["15999 teacher", "0.884", "0.820", "0.799"],
+    ["15999 student", "0.889", "0.822", "0.800"],
+    ["14999 teacher", "0.886", "0.820", "0.799"],
+    ["14999 student", "0.885", "0.822", "0.799"],
+]
+tbl = table(s, 5.25, 1.55, 7.3, 2.55, data,
+            col_widths=[2.0, 1.8, 1.8, 1.7], font_size=11,
+            highlight_rows={1: RGBColor(0xE8, 0xF2, 0xF0)})
+bullets(s, 5.25, 4.35, 7.3, 1.9, [
+    "两项下游、teacher/student 全部低于 base；p<0.001。",
+    "特征过度分散：pair cosine 0.82→0.14 / 0.63→0.07。",
+    "下一步：评估 5k/10k；若仍不如 base，转 LoRA/全量或调配方。",
+], size=11.5)
 footer(s, 9)
 
 # ================================================================ Slide 10
@@ -530,27 +525,26 @@ s = blank()
 section(s, "03 / 下一步")
 title(s, "问题、下一步与论文安排")
 card(s, 0.7, 1.5, 3.75, 4.7, "当前问题",
-     "SIGKILL：16:21:41，exitcode -9\n\n"
-     "GPU 争用：探针 1.31 → 实际 2.6 s/it\n\n"
-     "K/N = 0.77：头部记忆风险\n\n"
-     "4 级映射：doubtful 归并规则待定",
+     "probe 负结果：两项下游均低于 base\n\n"
+     "特征过度分散：pair cosine 0.82→0.14\n\n"
+     "15k≈16k：不是最后 1k 步问题\n\n"
+     "K/N=0.77；Stage 2 未跑",
      accent=RED, title_size=15, body_size=11.5)
 card(s, 4.75, 1.5, 3.75, 4.7, "下一步",
-     "本周：排查 SIGKILL；从 6999 续训\n\n"
-     "本周：DCP → HF 导出脚本\n\n"
-     "下周：完成 Stage 1 / Stage 2\n\n"
-     "下周：7k/10k/16k 冻结 probe\n\n"
-     "2–4 周：LoRA / 检测 A3 / 消融",
+     "先评 5k/10k（4999/9999_keep）\n\n"
+     "若仍不如 base → LoRA/全量\n\n"
+     "再决定 512 / Stage 2 / 检测 A3\n\n"
+     "论文：按 probe 结论调整故事",
      accent=TEAL, title_size=15, body_size=11.5)
 card(s, 8.8, 1.5, 3.65, 4.7, "论文安排",
-     "11 月：预训练 + probe\n\n"
+     "11 月：预训练 + probe（已完成）\n\n"
      "12 月：下游适配 + 检测 A3 + 消融\n\n"
      "1 月：初稿\n\n"
      "2 月：投稿\n\n"
      "目标会议 / 期刊：待定",
      accent=NAVY, title_size=15, body_size=11.5)
 tx(s, 0.7, 6.4, 11.75, 0.4,
-   "原则：先完成“数据—预训练—下游”闭环，再扩展新的下游任务。",
+   "原则：先确认 backbone 是否可用，再投入下游大实验。",
    size=11.5, bold=True, color=GRAY)
 footer(s, 10)
 
@@ -580,9 +574,8 @@ card(s, 0.7, 1.62, 11.75, 4.85, "摘要",
      "牙齿目标检测在内的多维度下游评测任务体系，采用固定数据集划分、多随机种子实验机制，"
      "以 QWK、Macro-F1、mAP50-95 作为统一量化指标，全面对比冻结线性探测、LoRA 微调、全量"
      "微调三种迁移学习范式，并以原生 DINOv3 模型作为基线对照。\n"
-     "大量实验结果表明，相较于通用 DINOv3 预训练模型，本文所提口腔域自适应预训练方案可有效"
-     "学习口腔专属结构化特征，在多项口腔影像下游任务中实现性能显著提升，为低成本、可泛化的"
-     "口腔疾病智能筛查提供了有效的预训练范式与工程实践参考。",
+     "目前 Stage 1 已完成；冻结线性 probe 在氟斑牙 4 级与口腔疾病 6 类上尚未超过 base DINOv3。"
+     "更早 checkpoint、LoRA/全量微调与检测 A3 正在评估，最终结论待补充。",
      accent=TEAL, title_size=15, body_size=13)
 tx(s, 0.7, 6.62, 11.75, 0.3,
    "关键词：口腔影像 · DINOv3 · 自监督预训练 · 域自适应 · 氟斑牙分级 · 牙齿检测",
@@ -597,13 +590,13 @@ tx(s, 0.7, 1.5, 5.9, 0.35, "三点结论", size=15, bold=True, color=TEAL)
 bullets(s, 0.7, 1.95, 5.9, 3.1, [
     "检测基线已收口：8 模型 + 828 固定 test + 人工复核。",
     "P0 失败已归因：loss 下降不等于下游提升；官方 recipe + softmax 是当前路线。",
-    "Stage 0 通过、Stage 1 训练健康（44%）；下一步用 probe 选 checkpoint。",
+    "Stage 1 已完成，但 frozen probe 在两项下游均低于 base；下一步评估 5k/10k 与微调。",
 ], size=13)
 tx(s, 6.95, 1.5, 5.5, 0.35, "三个请教问题", size=15, bold=True, color=ORANGE)
 bullets(s, 6.95, 1.95, 5.5, 3.1, [
     "论文的目标会议 / 期刊与时间线是否合适？",
     "下游优先级：氟斑牙分级，还是其他口腔疾病检测？",
-    "氟斑牙数据是否继续扩量 / 补标注，还是先用 141 张做方法验证？",
+    "氟斑牙数据是否继续扩量 / 补标注，还是先用 200 张做方法验证？",
 ], size=13, bullet_color=ORANGE)
 shp = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.7), Inches(5.55),
                          Inches(11.75), Inches(0.85))
